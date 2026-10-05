@@ -1,0 +1,179 @@
+diff --git a/opt/tillyouwake-memory/web/chat-models.js b/opt/tillyouwake-memory/web/chat-models.js
+index 215496d..86b5255 100644
+--- a/opt/tillyouwake-memory/web/chat-models.js
++++ b/opt/tillyouwake-memory/web/chat-models.js
+@@ -14,7 +14,8 @@
+   if (!root || !editRoot || !apiRoot) return;
+ 
+   const base = "/voice-api/v1/model-settings";
+-  const state = { revision: "", data: null, lane: "text", loading: false, missing: false };
++  const state = { revision: "", data: null, lane: "text", loading: false, missing: false, locationSaving: false };
++  let loadQueue = Promise.resolve();
+   const custom = "__custom";
+   // CLI 2.1.280 catalog: these cannot run with native thinking off (contract, rejects_disabled_thinking).
+   // Only a hint before saving; the service's warnings and native_thinking are what the page reports after.
+@@ -36,6 +37,13 @@
+       </button>
+     </div>
+     <p class="chat-models-notice" data-role="lanes-notice" role="status" aria-live="polite"></p>
++    <section class="chat-location" aria-label="定位设置">
++      <label class="chat-location-switch"><b>定位</b><input type="checkbox" role="switch" data-role="location-toggle" aria-label="定位" aria-describedby="chat-location-status chat-location-note" disabled></label>
++      <p id="chat-location-status" data-role="location-status" role="status" aria-live="polite">正在读取定位状态…</p>
++      <p id="chat-location-note">关闭后停止查询，不再提供新位置或触发移动唤醒。</p>
++      <div class="chat-location-actions"><button type="button" data-action="location-refresh">刷新状态</button><button type="button" data-action="location-retry" hidden>重试</button></div>
++      <p class="chat-models-notice" data-role="location-notice" role="status" aria-live="polite"></p>
++    </section>
+     <div class="chat-drawer-list">
+       <button type="button" class="chat-drawer-row" data-drawer-page="api">
+         <span>API 模型与连接</span><span class="chat-drawer-value"><span data-role="api-summary">尚未开放</span><span class="chat-drawer-chev" aria-hidden="true">›</span></span>
+@@ -105,6 +113,11 @@
+   const recallNote = find('[data-role="recall-note"]');
+   const recallConfirm = find('[data-role="recall-confirm"]');
+   const recallNotice = find('[data-role="recall-notice"]');
++  const locationToggle = find('[data-role="location-toggle"]');
++  const locationStatus = find('[data-role="location-status"]');
++  const locationNotice = find('[data-role="location-notice"]');
++  const locationRefresh = find('[data-action="location-refresh"]');
++  const locationRetry = find('[data-action="location-retry"]');
+   // Ombre breath "mode" for the automatic recall before each reply. No saved mode = the old mixed
+   // recall (not the same as "hybrid"); 祂's own breath calls are never changed from here.
+   const recallModes = {
+@@ -159,6 +172,60 @@
+     return payload;
+   }
+ 
++  function locationValue() {
++    const value = state.data?.location;
++    return value && typeof value.enabled === "boolean" && typeof value.running === "boolean" ? value : null;
++  }
++
++  function paintLocation() {
++    const value = locationValue();
++    const busy = state.locationSaving || state.loading;
++    locationToggle.checked = value?.enabled === true;
++    locationToggle.disabled = busy || !value || value.status === "unavailable"
++      || (!value.enabled && (value.status === "needs_setup" || value.running));
++    locationRefresh.disabled = busy;
++    const retryStop = value && !value.enabled && value.running;
++    const retryStart = value && value.enabled && !value.running && value.status !== "needs_login";
++    locationRetry.hidden = !(retryStop || retryStart);
++    locationRetry.disabled = busy;
++    locationRetry.textContent = retryStop ? "重试关闭" : "重试开启";
++    if (state.locationSaving) return;
++    if (!value || value.status === "unavailable") locationStatus.textContent = "暂时无法确认定位状态，请刷新重试。";
++    else if (!value.enabled && value.running) locationStatus.textContent = "位置已暂停，采集尚未完全停止，可以重试关闭。";
++    else if (value.status === "needs_setup") locationStatus.textContent = "待配置：完成 Apple 登录和设备配置后即可开启。";
++    else if (!value.enabled) locationStatus.textContent = "已关闭，位置查询和移动唤醒已暂停。";
++    else if (value.status === "needs_login") locationStatus.textContent = "需要重新登录 Apple，位置暂未更新。";
++    else if (!value.running) locationStatus.textContent = "采集已停止，可以重试开启。";
++    else if (value.status === "waiting_fresh") locationStatus.textContent = "正在获取位置，收到新定位后开始更新。";
++    else if (value.status === "stale") locationStatus.textContent = "位置暂未更新，正在等待设备上报。";
++    else if (value.status === "ok") locationStatus.textContent = "已开启，正在更新位置。";
++    else locationStatus.textContent = "已开启，位置状态待确认，请刷新查看。";
++  }
++
++  async function saveLocation(enabled) {
++    if (state.locationSaving || state.loading || !locationValue()) return;
++    state.locationSaving = true;
++    locationNotice.textContent = "";
++    paintLocation(); // Keep the confirmed checkbox value until GET confirms the change.
++    locationStatus.textContent = enabled ? "正在开启定位…" : "正在关闭定位…";
++    try {
++      await request(`${base}/location`, "POST", { enabled });
++    } catch (error) {
++      locationNotice.textContent = error?.code === "location_not_configured"
++        ? "需要先完成 Apple 登录和设备配置，目前未开启定位。"
++        : error?.code === "location_start_failed" ? "没能开启采集，请稍后重试。"
++        : error?.code === "location_stop_failed" ? "采集未完全停止，请重试关闭。"
++        : errorText(error);
++    } finally {
++      await load();
++      state.locationSaving = false;
++      paintLocation();
++    }
++  }
++  locationToggle.addEventListener("change", () => saveLocation(locationToggle.checked));
++  locationRetry.addEventListener("click", () => saveLocation(locationValue()?.enabled === true));
++  locationRefresh.addEventListener("click", () => { locationNotice.textContent = ""; load(); });
++
+   /* ---------- reading one lane ---------- */
+   // The text lane is the top-level cc block. The phone lane has its own block only when the service
+   // runs it as its own lane (lanes.phone.cc); otherwise the phone shares the text settings.
+@@ -452,12 +519,19 @@
+     stateLine.textContent = problems.length ? "App 服务报告电话/文字分线配置有问题，暂时不收新消息。需要检查服务端配置。" : "";
+     paintLanes();
+     paintApi(data.api || {});
++    paintLocation();
+     if (!editRoot.hidden) paintEditor();
+   }
+ 
+-  async function load() {
+-    if (state.loading) return;
++  function load() {
++    // Each save needs a read that starts after it, even if another read is already in flight.
++    loadQueue = loadQueue.then(readSettings, readSettings);
++    return loadQueue;
++  }
++
++  async function readSettings() {
+     state.loading = true;
++    paintLocation();
+     // Re-reading after a save or on re-open keeps the last real values on screen meanwhile.
+     if (!state.data) stateLine.textContent = "正在读取 App 私聊设置…";
+     try {
+@@ -475,6 +549,7 @@
+       if (!editRoot.hidden) paintEditor();
+     } finally {
+       state.loading = false;
++      paintLocation();
+     }
+   }
+ 
+
+diff --git a/opt/tillyouwake-memory/web/chat-models.css b/opt/tillyouwake-memory/web/chat-models.css
+index 13508ee..9c30b70 100644
+--- a/opt/tillyouwake-memory/web/chat-models.css
++++ b/opt/tillyouwake-memory/web/chat-models.css
+@@ -107,3 +107,20 @@ body.v4 .chat-view .chat-models-effort:has(input:focus-visible) .chat-models-eff
+ body.v4 .chat-view .chat-models-efforts:disabled .chat-models-effort-text { cursor: default; opacity: .6; }
+ body.v4 .chat-view .chat-models-warn { margin: 12px 0 0; padding: 9px 12px; border-left: 2px solid #c98a3a; border-radius: 0 10px 10px 0; background: color-mix(in srgb, #c98a3a 12%, transparent); font-size: 12.5px; line-height: 1.6; }
+ body.v4 .chat-view .chat-models-warn[hidden] { display: none; }
++
++/* Location shares the existing settings page and only displays confirmed server state. */
++body.v4 .chat-view .chat-location { margin-top: 14px; padding: 9px 13px 12px; border: 1px solid var(--line); border-radius: 14px; }
++body.v4 .chat-view .chat-location label.chat-location-switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; margin: 0; color: var(--ink); cursor: pointer; }
++body.v4 .chat-view .chat-location-switch b { font-size: 15px; font-weight: 600; }
++body.v4 .chat-view .chat-location .chat-location-switch input { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 44px; height: 27px; min-height: 27px; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 20px; background: color-mix(in srgb, var(--ink) 16%, transparent); cursor: pointer; }
++body.v4 .chat-view .chat-location-switch input::before { content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px; border-radius: 50%; background: var(--drawer-tint-solid, #f7f8f5); box-shadow: 0 1px 3px #0002; }
++body.v4 .chat-view .chat-location .chat-location-switch input:checked { background: var(--ink); border-color: var(--ink); }
++body.v4 .chat-view .chat-location-switch input:checked::before { transform: translateX(17px); }
++body.v4 .chat-view .chat-location-switch input:disabled { opacity: .45; cursor: default; }
++body.v4 .chat-view .chat-location :is(input, button):focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
++body.v4 .chat-view .chat-location p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
++body.v4 .chat-view .chat-location [data-role="location-status"] { color: var(--ink); font-size: 13px; }
++body.v4 .chat-view .chat-location-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 5px; }
++body.v4 .chat-view .chat-location-actions button { min-height: 40px; padding: 4px 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
++body.v4 .chat-view .chat-location-actions button:disabled { opacity: .45; cursor: default; }
++body.v4 .chat-view .chat-location [hidden] { display: none; }
+
+diff --git a/opt/tillyouwake-memory/web/index.html b/opt/tillyouwake-memory/web/index.html
+index 1f19449..8bd8544 100644
+--- a/opt/tillyouwake-memory/web/index.html
++++ b/opt/tillyouwake-memory/web/index.html
+@@ -17,7 +17,7 @@
+   <link rel="stylesheet" href="/assets/memory-shards.css?v=20260930panda1">
+   <link rel="stylesheet" href="/assets/chat-view.css?v=20261003bubbles1">
+   <link rel="stylesheet" href="/assets/chat-drawer.css?v=20261003reset1">
+-  <link rel="stylesheet" href="/assets/chat-models.css?v=20260927chat7">
++  <link rel="stylesheet" href="/assets/chat-models.css?v=20261003location1">
+   <link rel="stylesheet" href="/assets/chat-quote.css?v=20260927chat7">
+   <link rel="stylesheet" href="/assets/chat-voice.css?v=20260929final1">
+   <link rel="stylesheet" href="/assets/chat-search.css?v=20260927chat7">
+@@ -1231,6 +1231,6 @@
+   <script src="/assets/chat-history.js?v=20261003bubbles1" defer></script>
+   <script src="/assets/chat-search.js?v=20260927chat7" defer></script>
+   <script src="/assets/chat-glass.js?v=20260927chat7" defer></script>
+-  <script src="/assets/chat-models.js?v=20260929final1" defer></script>
++  <script src="/assets/chat-models.js?v=20261003location1" defer></script>
+ </body>
+ </html>

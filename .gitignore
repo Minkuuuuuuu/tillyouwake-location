@@ -1,0 +1,28 @@
+# Credentials, account/device configuration, sessions and live location state
+credentials.env
+config.json
+cookies/
+*.session
+*.cookiejar
+latest.json
+calibration.json
+runtime.json
+last-resume-diagnostic.json
+*.env
+!credentials.example.env
+*.pem
+*.key
+*.sqlite*
+*.db
+*.log
+
+# Local dependencies and test output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+test-results/
+playwright-report/
+.DS_Store

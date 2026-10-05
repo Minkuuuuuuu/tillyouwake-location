@@ -1,0 +1,36 @@
+[Unit]
+Description=TillyouWake location collector (iCloud Find My -> latest.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tillyouwake-location
+Group=tillyouwake-location
+WorkingDirectory=/var/lib/tillyouwake-location
+Environment=HOME=/var/lib/tillyouwake-location
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-/etc/tillyouwake-location/credentials.env
+ExecStart=/opt/tillyouwake-location/.venv/bin/python /opt/tillyouwake-location/collector.py
+# Disabled/unconfigured exits 0 and stays stopped; only crashes restart, slowly.
+Restart=on-failure
+RestartSec=60
+TimeoutStopSec=10
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/opt/tillyouwake-location /etc/tillyouwake-location
+ReadWritePaths=/var/lib/tillyouwake-location
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=300M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

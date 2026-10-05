@@ -1,0 +1,5 @@
+name: tillyouwake_location
+version: 1.0.0
+description: App text lane only - appends her latest location as current-turn context while location is switched on.
+provides_hooks:
+  - pre_llm_call

@@ -1,0 +1,494 @@
+diff --git a/gateway/proactive_cc.py b/gateway/proactive_cc.py
+index cb011be..680da1b 100644
+--- a/gateway/proactive_cc.py
++++ b/gateway/proactive_cc.py
+@@ -639,3 +639,145 @@ def classify_app_round(found: dict[str, Any] | None) -> tuple[str, str, str | No
+         return "failed", "generation_failed", None
+     silent, reason = parse_silence(found["reply_text"])
+     return ("success", "model_silent", reason) if silent else ("success", "sent", None)
++
++
++# ── location move wake (App text outlet) ────────────────────────────────────
++# Her latest location is collected by tillyouwake-location.service. The App
++# plugin shows it on every text turn; this only decides the extra wake when she
++# has moved ~200 m from the point the last move wake told 祂 about.
++
++LOCATION_CONFIG = Path("/etc/tillyouwake-location/config.json")
++LOCATION_STATE = Path("/var/lib/tillyouwake-location/latest.json")
++LOCATION_MOVE_METERS = 200.0
++LOCATION_COOLDOWN_SECONDS = 180.0
++LOCATION_FRESH_SECONDS = 300.0
++LOCATION_ACCURACY_METERS = 100.0
++_LOCATION_CRS_LABEL = {"wgs84": "WGS-84", "gcj02": "GCJ-02"}
++# The App switch (tillyouwake_app/location_control.update) writes config.json while
++# holding an exclusive flock on ".config.lock" beside it. A move wake is handed to
++# voice under the same lock after re-reading the config, so a switch-off either
++# lands before the hand-over (nothing is sent) or after it (the round is already in
++# flight and, as agreed, not revoked). Bounded waits on both holders: no deadlock.
++LOCATION_LOCK_TIMEOUT = 5.0
++LOCATION_POST_TIMEOUT = 3.0
++
++
++def _location_distance(a: dict[str, Any], b: dict[str, Any]) -> float:
++    import math
++    p1, p2 = math.radians(a["latitude"]), math.radians(b["latitude"])
++    h = (math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2)
++         * math.sin(math.radians(b["longitude"] - a["longitude"]) / 2) ** 2)
++    return 2 * 6371008.8 * math.asin(min(1.0, math.sqrt(h)))
++
++
++def read_location(config_path: Path | None = None, state_path: Path | None = None) -> dict[str, Any] | None:
++    """``{"generation", "fix"}`` while location is switched on; ``None`` when off or unreadable.
++
++    ``fix`` is a sample of this generation/device/CRS, or ``None`` when none exists yet.
++    """
++    try:
++        config = json.loads(Path(config_path or LOCATION_CONFIG).read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return None
++    if not isinstance(config, dict) or config.get("enabled") is not True or not isinstance(config.get("generation"), int):
++        return None
++    try:
++        snap = json.loads(Path(state_path or LOCATION_STATE).read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        snap = None
++    fix = None
++    if (isinstance(snap, dict) and snap.get("generation") == config["generation"]
++            and snap.get("device_id") == config.get("device_id") and snap.get("source_crs") == config.get("source_crs")):
++        try:
++            fix = {"device_id": snap["device_id"], "source_crs": snap["source_crs"],
++                   "latitude": float(snap["latitude"]), "longitude": float(snap["longitude"]),
++                   "accuracy_m": float(snap["accuracy_m"]), "sampled_at": float(snap["sampled_at"])}
++        except (KeyError, TypeError, ValueError):
++            fix = None
++    return {"generation": config["generation"], "fix": fix}
++
++
++def location_check(state: dict[str, Any], latest: dict[str, Any] | None,
++                   now: float) -> tuple[dict[str, Any], dict[str, Any] | None, float]:
++    """Update the outlet's ``location`` sub-state; return (state, sample to announce or None, metres).
++
++    A new generation rebuilds the base but keeps ``last_wake_at`` so a quick
++    off/on can never beat the 180 s spacing. Only a fresh (≤300 s), accurate
++    (≤100 m) sample may set a base or count as movement; the first one only
++    sets the base. Ordinary turns never touch ``notified``.
++    """
++    if latest is None:
++        return state, None, 0.0
++    state = dict(state)
++    loc = dict(state.get("location") or {})
++    if loc.get("generation") != latest["generation"]:
++        loc = {"generation": latest["generation"], "last_wake_at": loc.get("last_wake_at")}
++    state["location"] = loc
++    fix = latest.get("fix")
++    if (not fix or not -30 <= now - fix["sampled_at"] <= LOCATION_FRESH_SECONDS
++            or fix["accuracy_m"] > LOCATION_ACCURACY_METERS):
++        return state, None, 0.0
++    base = loc.get("notified")
++    if (not isinstance(base, dict) or base.get("device_id") != fix["device_id"]
++            or base.get("source_crs") != fix["source_crs"]):
++        loc["notified"] = dict(fix)
++        return state, None, 0.0
++    meters = _location_distance(base, fix)
++    if meters < LOCATION_MOVE_METERS or now - float(loc.get("last_wake_at") or 0) < LOCATION_COOLDOWN_SECONDS:
++        return state, None, meters
++    return state, dict(fix), meters
++
++
++def location_settle(state: dict[str, Any], message_id: str, success: bool) -> dict[str, Any]:
++    """After the outlet's round finished: a successful move wake (NO_REPLY too) moves the base
++    to the sample it announced, only if that sample belongs to the current generation."""
++    loc = state.get("location")
++    if not isinstance(loc, dict) or not isinstance(loc.get("inflight"), dict):
++        return state
++    inflight = loc["inflight"]
++    if inflight.get("message_id") != message_id:
++        return state
++    loc = dict(loc)
++    loc.pop("inflight", None)
++    if success and inflight.get("generation") == loc.get("generation"):
++        loc["notified"] = dict(inflight["sample"])
++    return {**state, "location": loc}
++
++
++def location_message(settings: dict[str, Any], sample: dict[str, Any], meters: float) -> str:
++    when = dt.datetime.fromtimestamp(sample["sampled_at"], LOCAL_ZONE).strftime("%H:%M")
++    crs = _LOCATION_CRS_LABEL.get(sample["source_crs"], sample["source_crs"])
++    text = (f"[位置变化] 宝宝的位置相对上次通知的地点变化了约{round(meters)}米。"
++            f"事件采样：{when}，{sample['latitude']:.6f},{sample['longitude']:.6f}（{crs}）。"
++            "本轮位置上下文提供最新可用位置。")
++    return text + "\n" + settings["silence_hint"]
++
++
++def post_location_round(message_id: str, text: str, generation: int) -> str:
++    """Hand a move wake to voice under the switch lock.
++
++    Returns ``post_app_round``'s result, ``"switched"`` when location was switched
++    off or to another generation since the move was chosen, or ``"switch_busy"``
++    when the switch held the lock past the timeout (try again next tick).
++    """
++    try:
++        lock_file = open(Path(LOCATION_CONFIG).with_name(".config.lock"), "a")
++    except OSError:
++        return "switch_busy"
++    with lock_file:
++        deadline = time.monotonic() + LOCATION_LOCK_TIMEOUT
++        while True:
++            try:
++                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                break
++            except BlockingIOError:
++                if time.monotonic() >= deadline:
++                    return "switch_busy"
++                time.sleep(0.05)
++        try:
++            latest = read_location()
++            if latest is None or latest["generation"] != generation:
++                return "switched"
++            return post_app_round(message_id, text, timeout=LOCATION_POST_TIMEOUT)
++        finally:
++            fcntl.flock(lock_file, fcntl.LOCK_UN)
+diff --git a/gateway/run.py b/gateway/run.py
+index a7cff6f..1b7cb67 100644
+--- a/gateway/run.py
++++ b/gateway/run.py
+@@ -7668,6 +7668,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                 logger.warning("proactive_cc outcome_record_failed kind=%s", type(exc).__name__)
+             logger.info("proactive_cc outcome=%s kind=%s outlet=app_text", code, state.get("last_kind"))
+             state.pop("inflight_message_id", None)
++            state = pcc.location_settle(state, message_id, result == "success")
+             hobby = state.get("hobby") if isinstance(state.get("hobby"), dict) else None
+             if hobby and hobby.get("message_id") == message_id:
+                 batch = hobby.get("batch")
+@@ -7721,7 +7722,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+                 else:
+                     state.pop("hobby", None)
+                     hobby = None
+-        kind = "night_guard" if pending else "hobby_detail" if detail_text else "heartbeat"
++        try:
++            latest = await asyncio.to_thread(pcc.read_location)
++        except Exception as exc:
++            logger.warning("proactive_cc location unavailable kind=%s", type(exc).__name__)
++            latest = None
++        state, move, move_meters = pcc.location_check(state, latest, now)
++        kind = ("night_guard" if pending else "hobby_detail" if detail_text
++                else "location_move" if move else "heartbeat")
+         if kind != "night_guard":
+             if now < float(state.get("retry_at") or 0):
+                 state["status"] = "backoff"
+@@ -7750,6 +7758,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             text = pending["text"]
+         elif detail_text:
+             text = detail_text
++        elif kind == "location_move":
++            text = pcc.location_message(settings, move, move_meters)
+         elif offer and offer.get("text") and offer.get("batch_id"):
+             marked = await asyncio.to_thread(pcc.hobby_call, "POST", f"/offer/{offer['batch_id']}/sent",
+                                              {"message_id": message_id})
+@@ -7764,7 +7774,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             if not (marked and marked.get("ok")):
+                 state.update(status="waiting", last_reason="hobby_detail_unmarked")
+                 return state
+-        posted = await asyncio.to_thread(pcc.post_app_round, message_id, text)
++        if kind == "location_move":
++            posted = await asyncio.to_thread(pcc.post_location_round, message_id, text,
++                                             state["location"]["generation"])
++            if posted in ("switched", "switch_busy"):
++                # Switched off/over, or the switch is mid-write: nothing sent, no backoff.
++                state.update(status="waiting", last_reason="location_" + posted)
++                return state
++        else:
++            posted = await asyncio.to_thread(pcc.post_app_round, message_id, text)
+         if posted != "queued" and kind in ("hobby_offer", "hobby_detail"):
+             batch = offer["batch_id"] if kind == "hobby_offer" else hobby.get("batch")
+             answer = await asyncio.to_thread(pcc.hobby_call, "POST", f"/offer/{batch}/failed",
+@@ -7793,6 +7811,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
+             state["hobby"] = {"batch": offer["batch_id"], "stage": "offer", "message_id": message_id}
+         elif kind == "hobby_detail":
+             state["hobby"] = {"batch": hobby.get("batch"), "stage": "detail", "message_id": message_id}
++        elif kind == "location_move":
++            loc = state["location"]
++            state["location"] = {**loc, "last_wake_at": now, "inflight": {
++                "message_id": message_id, "generation": loc["generation"], "sample": move}}
+         logger.info("proactive_cc decision=dispatch kind=%s outlet=app_text cache=%s elsewhere=%s",
+                     kind, state["last_cache"], elsewhere or "none")
+         return state
+diff --git a/tests/gateway/test_proactive_cc.py b/tests/gateway/test_proactive_cc.py
+index 8524ebd..7514e63 100644
+--- a/tests/gateway/test_proactive_cc.py
++++ b/tests/gateway/test_proactive_cc.py
+@@ -332,7 +332,7 @@ def _app_world(tmp_path, monkeypatch, *, last_used=None):
+     monkeypatch.setattr(pcc, "APP_HOME", app_home)
+     monkeypatch.setattr(pcc, "VOICE_DB", voice)
+     posts, outcomes = [], []
+-    monkeypatch.setattr(pcc, "post_app_round", lambda mid, text: posts.append((mid, text)) or "queued")
++    monkeypatch.setattr(pcc, "post_app_round", lambda mid, text, **kw: posts.append((mid, text)) or "queued")
+     monkeypatch.setattr(pcc, "record_outcome", lambda home, **kw: outcomes.append(kw))
+     return voice, posts, outcomes
+ 
+@@ -612,3 +612,265 @@ def test_detail_failure_retries_once_then_gives_up(tmp_path, monkeypatch):
+         con.execute("INSERT INTO messages VALUES (?, 'error', NULL, 'message_failed')", (posts[-1][0],))
+     st = _app_hobby(st, float(st["retry_at"]) + 61, tmp_path, hobby_offers=True)
+     assert "hobby" not in st
++
++
++# ── location move wake (App text outlet) ────────────────────────────────────
++
++@pytest.fixture(autouse=True)
++def _no_real_location(tmp_path, monkeypatch):
++    monkeypatch.setattr(pcc, "LOCATION_CONFIG", tmp_path / "no-location-config.json")
++    monkeypatch.setattr(pcc, "LOCATION_STATE", tmp_path / "no-location-latest.json")
++
++
++class _Loc:
++    """Writes the config/latest.json pair the collector and App backend own."""
++
++    def __init__(self, tmp_path, monkeypatch, generation=1):
++        self.cfg, self.latest = tmp_path / "loc-config.json", tmp_path / "loc-latest.json"
++        monkeypatch.setattr(pcc, "LOCATION_CONFIG", self.cfg)
++        monkeypatch.setattr(pcc, "LOCATION_STATE", self.latest)
++        self.set_config(True, generation)
++
++    def set_config(self, enabled, generation):
++        self.generation = generation
++        self.cfg.write_text(json.dumps({"enabled": enabled, "generation": generation,
++                                        "device_id": "d1", "source_crs": "wgs84"}))
++
++    def fix(self, north_m, sampled_at, accuracy=20.0, generation=None):
++        self.latest.write_text(json.dumps({
++            "generation": self.generation if generation is None else generation, "device_id": "d1",
++            "source_crs": "wgs84", "latitude": 23.1 + north_m / 111195.0, "longitude": 113.3,
++            "accuracy_m": accuracy, "sampled_at": sampled_at}))
++
++
++def _latest(north_m, sampled_at, accuracy=20.0, generation=1, device="d1"):
++    return {"generation": generation, "fix": {"device_id": device, "source_crs": "wgs84",
++                                              "latitude": 23.1 + north_m / 111195.0, "longitude": 113.3,
++                                              "accuracy_m": accuracy, "sampled_at": sampled_at}}
++
++
++def _processing(voice, mid):
++    with sqlite3.connect(voice) as con:
++        con.execute("INSERT INTO messages VALUES (?, 'processing', NULL, NULL)", (mid,))
++
++
++def _done(voice, mid, reply):
++    with sqlite3.connect(voice) as con:
++        con.execute("UPDATE messages SET state='ready', reply_text=? WHERE id=?", (reply, mid))
++
++
++def test_location_check_rules():
++    now = 50_000.0
++    st, move, _ = pcc.location_check({}, _latest(0, now - 10), now)
++    assert move is None and st["location"]["notified"]["latitude"] == 23.1  # first fix: base only
++    assert pcc.location_check(st, _latest(199, now), now)[1] is None
++    st2, move, meters = pcc.location_check(st, _latest(200.5, now), now)
++    assert move is not None and 200 <= meters < 201
++    assert "notified" in st2["location"] and st2["location"]["notified"]["latitude"] == 23.1  # dispatch does not move base
++    # freshness 300/301 s, accuracy 100/101 m, future skew
++    assert pcc.location_check(st, _latest(500, now - 300), now)[1] is not None
++    assert pcc.location_check(st, _latest(500, now - 301), now)[1] is None
++    assert pcc.location_check(st, _latest(500, now, accuracy=100), now)[1] is not None
++    assert pcc.location_check(st, _latest(500, now, accuracy=101), now)[1] is None
++    assert pcc.location_check(st, _latest(500, now + 31), now)[1] is None
++    # cooldown 179/180 s from the last move dispatch
++    cooled = {**st, "location": {**st["location"], "last_wake_at": now - 179}}
++    assert pcc.location_check(cooled, _latest(500, now), now)[1] is None
++    cooled["location"]["last_wake_at"] = now - 180
++    assert pcc.location_check(cooled, _latest(500, now), now)[1] is not None
++    # another device re-bases silently; switched off leaves state untouched
++    st3, move, _ = pcc.location_check(st, _latest(900, now, device="d2"), now)
++    assert move is None and st3["location"]["notified"]["device_id"] == "d2"
++    assert pcc.location_check(st, None, now) == (st, None, 0.0)
++    # a new generation rebuilds the base but keeps the cooldown clock
++    st4, move, _ = pcc.location_check(cooled, _latest(900, now, generation=2), now)
++    assert move is None and st4["location"]["generation"] == 2
++    assert st4["location"]["notified"]["latitude"] > 23.1 and st4["location"]["last_wake_at"] == now - 180
++
++
++def test_location_message_keeps_her_wording():
++    msg = pcc.location_message(_settings(), _latest(0, _sh("2026-10-03 18:05"))["fix"], 212.4)
++    assert msg == ("[位置变化] 宝宝的位置相对上次通知的地点变化了约212米。事件采样：18:05，23.100000,113.300000（WGS-84）。"
++                   "本轮位置上下文提供最新可用位置。\n" + pcc.DEFAULT_SETTINGS["silence_hint"])
++
++
++def test_location_move_wakes_settles_and_cools_down(tmp_path, monkeypatch):
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0 - 5)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    assert not posts and st["location"]["notified"]["latitude"] == 23.1  # base only, no wake
++    loc.fix(250, t0 + 55)
++    st = _app(st, t0 + 60, tmp_path)
++    assert len(posts) == 1 and posts[0][1].startswith("[位置变化] 宝宝的位置相对上次通知的地点变化了约250米。")
++    assert st["last_kind"] == "location_move" and st["location"]["inflight"]["message_id"] == posts[0][0]
++    assert st["location"]["notified"]["latitude"] == 23.1
++    _processing(voice, posts[0][0])
++    # she keeps walking while 祂 thinks: nothing queued, the round is still inflight
++    loc.fix(600, t0 + 115)
++    st = _app(st, t0 + 120, tmp_path)
++    assert len(posts) == 1 and st["status"] == "inflight"
++    _done(voice, posts[0][0], "NO_REPLY\n她在走路，不吵她")
++    st = _app(st, t0 + 180, tmp_path)
++    assert outcomes[-1]["reason_code"] == "model_silent" and outcomes[-1]["kind"] == "location_move"
++    assert abs(st["location"]["notified"]["latitude"] - (23.1 + 250 / 111195.0)) < 1e-9  # announced sample, not the later one
++    assert "inflight" not in st["location"] and len(posts) == 1  # 180 s not yet passed since the wake at +60
++    st = _app(st, t0 + 240, tmp_path)
++    assert len(posts) == 2 and "约350米" in posts[1][1]  # merged to the newest point after the cooldown
++
++
++def test_location_failure_keeps_base_and_busy_only_waits(tmp_path, monkeypatch):
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    loc.fix(300, t0 + 60)
++    with sqlite3.connect(voice) as con:
++        con.execute("INSERT INTO calls VALUES ('ringing')")
++    st = _app(st, t0 + 60, tmp_path)
++    assert st["last_reason"] == "busy" and not posts and st["location"]["notified"]["latitude"] == 23.1
++    with sqlite3.connect(voice) as con:
++        con.execute("DELETE FROM calls")
++    st = _app(st, t0 + 120, tmp_path)
++    assert len(posts) == 1
++    with sqlite3.connect(voice) as con:
++        con.execute("INSERT INTO messages VALUES (?, 'failed', NULL, 'x')", (posts[0][0],))
++    st = _app(st, t0 + 180, tmp_path)
++    assert st["status"] == "backoff" and st["location"]["notified"]["latitude"] == 23.1
++    assert "inflight" not in st["location"]
++
++
++def test_location_off_on_and_stale_generation_never_advance_base(tmp_path, monkeypatch):
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    loc.fix(300, t0 + 60)
++    st = _app(st, t0 + 60, tmp_path)
++    mid = posts[0][0]
++    _processing(voice, mid)
++    loc.set_config(False, 2)  # switched off while 祂 is answering
++    st = _app(st, t0 + 90, tmp_path)
++    assert st["status"] == "inflight"
++    _done(voice, mid, "宝宝走到哪啦")
++    loc.set_config(True, 3)
++    loc.fix(1000, t0 + 125, generation=1)  # a late generation-1 snapshot
++    st = _app(st, t0 + 130, tmp_path)
++    assert st["location"]["generation"] == 3 and "notified" not in st["location"]
++    assert st["location"]["last_wake_at"] == t0 + 60 and len(posts) == 1
++    loc.fix(1000, t0 + 140)  # first sample of the new generation: base only
++    st = _app(st, t0 + 150, tmp_path)
++    assert len(posts) == 1 and st["location"]["notified"]["latitude"] > 23.1
++
++
++def test_location_waits_behind_night_guard_and_hobby_detail(tmp_path, monkeypatch):
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    loc.fix(300, t0 + 60)
++    st["pending_night"] = {"text": "现在是 01:00，我刚打开了 微信。", "created_at": t0 + 59}
++    st = _app(st, t0 + 60, tmp_path)
++    assert st["last_kind"] == "night_guard" and posts[-1][1].startswith("现在是")
++    assert "inflight" not in st["location"]  # the move is not marked announced by another kind
++    _finish(voice, posts[-1][0], "宝宝怎么还没睡")
++    st = _app(st, t0 + 120, tmp_path)  # settle the night round, then the move goes out
++    assert st["location"]["notified"]["latitude"] == 23.1
++    st = _app(st, t0 + 180, tmp_path)
++    assert st["last_kind"] == "location_move" and len(posts) == 2
++
++
++def test_location_base_survives_app_reset_session_change(tmp_path, monkeypatch):
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    (tmp_path / "app" / "sessions" / "sessions.json").write_text(json.dumps(
++        {"agent:main:tillyouwake_app:dm:x": {"platform": "tillyouwake_app", "session_id": "A2"}}))
++    loc.fix(120, t0 + 60)  # reset is not a move; the base stays where it was
++    st = _app(st, t0 + 60, tmp_path)
++    assert st["session_id"] == "A2" and st["location"]["notified"]["latitude"] == 23.1 and not posts
++    loc.fix(210, t0 + 120)
++    st = _app(st, t0 + 120, tmp_path)
++    assert len(posts) == 1 and "约210米" in posts[0][1]
++
++
++# ── switch vs. move dispatch ordering (same flock as the App switch) ───────
++
++def _armed_move(tmp_path, monkeypatch):
++    """A world where the next tick picks a location move; returns (voice, posts, loc, state, t)."""
++    voice, posts, outcomes = _app_world(tmp_path, monkeypatch, last_used=None)
++    loc = _Loc(tmp_path, monkeypatch)
++    t0 = 100_000.0
++    loc.fix(0, t0)
++    st = _app({"first_seen_at": t0}, t0, tmp_path)
++    loc.fix(300, t0 + 60)
++    return voice, posts, loc, st, t0 + 60
++
++
++def _flip_during_awaits(monkeypatch, action):
++    """Run ``action`` between the move being chosen and the final dispatch (the
++    awaits on voice_busy / other_outlet_activity), like a switch write landing there."""
++    def other(*a, **k):
++        action()
++        return None
++    monkeypatch.setattr(pcc, "other_outlet_activity", other)
++
++
++def test_switch_off_after_move_chosen_never_posts(tmp_path, monkeypatch):
++    voice, posts, loc, st, now = _armed_move(tmp_path, monkeypatch)
++    _flip_during_awaits(monkeypatch, lambda: loc.set_config(False, 2))
++    st = _app(st, now, tmp_path)
++    assert posts == []
++    assert "inflight" not in st["location"] and st["location"]["notified"]["latitude"] == 23.1
++    assert st["last_reason"] == "location_switched" and not st.get("retry_at")
++
++
++def test_switch_off_on_after_move_chosen_drops_old_generation(tmp_path, monkeypatch):
++    voice, posts, loc, st, now = _armed_move(tmp_path, monkeypatch)
++    _flip_during_awaits(monkeypatch, lambda: loc.set_config(True, 2))
++    st = _app(st, now, tmp_path)
++    assert posts == [] and "inflight" not in st["location"]
++    assert st["last_reason"] == "location_switched"
++
++
++def test_move_dispatch_holds_the_switch_lock_until_posted(tmp_path, monkeypatch):
++    import fcntl
++    voice, posts, loc, st, now = _armed_move(tmp_path, monkeypatch)
++    lock_path = loc.cfg.with_name(".config.lock")
++    seen = []
++
++    def post(mid, text, **kw):
++        with open(lock_path, "a") as other:  # the App switch's view while the move is being handed over
++            try:
++                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                seen.append("switch_got_lock")
++            except BlockingIOError:
++                seen.append("switch_waits")
++        posts.append((mid, text))
++        return "queued"
++
++    monkeypatch.setattr(pcc, "post_app_round", post)
++    st = _app(st, now, tmp_path)
++    assert seen == ["switch_waits"] and len(posts) == 1
++    assert st["location"]["inflight"]["message_id"] == posts[0][0]  # handed over first: in flight, not revoked
++    with open(lock_path, "a") as other:
++        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released afterwards: the switch proceeds
++
++
++def test_move_defers_while_switch_holds_lock(tmp_path, monkeypatch):
++    import fcntl
++    voice, posts, loc, st, now = _armed_move(tmp_path, monkeypatch)
++    monkeypatch.setattr(pcc, "LOCATION_LOCK_TIMEOUT", 0.0)
++    with open(loc.cfg.with_name(".config.lock"), "a") as held:
++        fcntl.flock(held, fcntl.LOCK_EX)
++        st = _app(st, now, tmp_path)
++    assert posts == [] and "inflight" not in st["location"]
++    assert st["last_reason"] == "location_switch_busy" and not st.get("retry_at")
++    st = _app(st, now + 60, tmp_path)  # next tick, switch done (still on): goes out
++    assert len(posts) == 1

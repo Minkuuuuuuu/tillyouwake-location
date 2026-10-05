@@ -1,0 +1,127 @@
+{
+  "exportedOn": "2026-10-05",
+  "mainHead": "90eb11bfe2aed1bdd1fd0fda952371de6445903a",
+  "appVoiceBaselineLf": {
+    "opt/tillyouwake-app-hermes-src/agent/turn_context.py": {
+      "sha256_lf": "63329cab4533bbbbb43e8829c59324ddda317a003a68b9ce7d3f9cb8470a0b3e"
+    },
+    "srv/tillyouwake-app-hermes/plugins/tillyouwake_app/adapter.py": {
+      "sha256_lf": "690833d2787b06e5983339c4271b25b3d93777b63743e8f4f68b27cfc68fb18d"
+    },
+    "srv/tillyouwake-app-hermes/plugins/tillyouwake_app/model_settings.py": {
+      "sha256_lf": "9e22b7249c0a08f366e0ddd90746e7a679516c47cbdd0fba6edefaf83fb5b629"
+    },
+    "opt/tillyouwake-voice/voice_service.py": {
+      "sha256_lf": "dad8361e2c9d45ca8be15b94b30a612d909e718ac504184678a41d1fe4a1996c"
+    },
+    "opt/tillyouwake-voice/settings_bridge.py": {
+      "sha256_lf": "f35da8c244be3479ac8a639a86341b5871b6128b4be270fcebbef2a339cd8e52"
+    }
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "c7937d939bb379fefd2f5052d63909c4795397ee2f84ce27a58a039194e10db8"
+    },
+    {
+      "path": "collector.py",
+      "sha256": "a2d1f8540a64c7abc20314fa5932a1537ad62c767fb522c7d592c49f75f225d4"
+    },
+    {
+      "path": "config.example.json",
+      "sha256": "9841a19646d4784d7b38924e0819c428d92a7cbf35bc92ea1f23180e092e5592"
+    },
+    {
+      "path": "credentials.example.env",
+      "sha256": "b4dc53a1e8ce164e85953faf30c7a912044d0b4dac03d51f8c205e3d4981f10b"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_app/location_control.py",
+      "sha256": "4287d7de0842caa8aa5bda62ebe5bc766adef732c643ad628bc832205ae53ab6"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_location/plugin.yaml",
+      "sha256": "f42f7f7c94f78243ecae2500f8dbf106a149a3679a448cffff3df1e4034981e2"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_location/__init__.py",
+      "sha256": "c876154d0545c570faf8c3b7e133fdb4b633353598bb2b21442accf41c6db199"
+    },
+    {
+      "path": "integrations/app-voice.patch",
+      "sha256": "8dd96a963e465c1c87dabefe58c6eb8c390e0de965cbc17723e37bf76abefe48"
+    },
+    {
+      "path": "integrations/frontend.patch",
+      "sha256": "73cf5fa37fa76640b6aa6f2db6a09d82cf2b225ec8ec56b769a935e1db0b529d"
+    },
+    {
+      "path": "integrations/main-gateway.patch",
+      "sha256": "70e7a3f1fba0413082a5d5bb7f95d4f416b769bfca2a23d876043556c95527fd"
+    },
+    {
+      "path": "integrations/README.md",
+      "sha256": "5fb05e963f370aeaf5312397842e4abbde98a0fb43653c32584ec01227b9a9af"
+    },
+    {
+      "path": "README.md",
+      "sha256": "c2c3e7891c28f6fe411fc9b12905f0df24c75b38bb8823874a290d0c97e4f76d"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "fc6822eeb88c1a43e9a6e70b04a908a93eb1dcf9c09e92779897efffc232a181"
+    },
+    {
+      "path": "setup-login.py",
+      "sha256": "d4b150f8587209fdfb1dd0f43eec251b7c6d7c392a36d74a7b8e2f116a4fc1f5"
+    },
+    {
+      "path": "SETUP.md",
+      "sha256": "09949526c5a9eb46ad6acabbdf88e7fdb82ea0429f57743bae251c68644c0355"
+    },
+    {
+      "path": "systemd/tillyouwake-location.service",
+      "sha256": "aac860db21175ca46f40c03260173d1f001fce4c0f8553e2b09c8250d83b4934"
+    },
+    {
+      "path": "tests/test_collector_startup.py",
+      "sha256": "7cb20621dd223608503a9a809ab5502b6c7db383c959db0576fd215de45ae8e6"
+    },
+    {
+      "path": "tests/test_location.py",
+      "sha256": "7734f9631682c719d6b10e4a27d7b61e20bf35e751a42f000a90f4eddc5c61d7"
+    },
+    {
+      "path": "tests/test_location_context.py",
+      "sha256": "43717dbc82a79ec5f28bff12250248a2d8dd69036a8bdf4f95617e6e6cb7d5e2"
+    },
+    {
+      "path": "tests/test_location_settings.py",
+      "sha256": "e2974254fb069bf69378faec6b49817a62c6b49d4ce7327c50e76a145add8b8a"
+    },
+    {
+      "path": "tests/test_resume_transport.py",
+      "sha256": "739daa3aff63b49aed126c80732789533c9fbe6f1e257c7625d1abeb7544aaa4"
+    },
+    {
+      "path": "tests/test_setup_resume.py",
+      "sha256": "17d31f024a3929c687317e907f3e91b152c133e70fc5c0baa5ccc59c4caa91fb"
+    },
+    {
+      "path": "VERIFICATION.md",
+      "sha256": "e6aebefd68b425232c696f3f760575336fad10d60ef46b7f2304ccbbd76b01b5"
+    }
+  ],
+  "testPathAdaptations": "Tests use repository-relative paths; plugin lane assertion reads the integration patch, and its clock is fixed to the sample fixture time. Installed collector/helper/plugin sources unchanged.",
+  "frontendBaselineLf": {
+    "opt/tillyouwake-memory/web/chat-models.js": {
+      "sha256_lf": "5d6d01a9a629f387e52110b1339338bc35ddcfc8c93113e3a7c148001801605a"
+    },
+    "opt/tillyouwake-memory/web/chat-models.css": {
+      "sha256_lf": "65ec8f00f7d63c838495bc4349dc4aa69d6b4ffd79e743ae9cfabe6f13f6857b"
+    },
+    "opt/tillyouwake-memory/web/index.html": {
+      "sha256_lf": "12afa07f55b8ed9d64b24c6348ac0af6f83108518ae3af090c3af5ef4ffd6102"
+    }
+  }
+}

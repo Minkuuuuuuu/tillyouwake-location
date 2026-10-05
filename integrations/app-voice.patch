@@ -1,0 +1,80 @@
+--- a/srv/tillyouwake-app-hermes/plugins/tillyouwake_app/adapter.py
++++ b/srv/tillyouwake-app-hermes/plugins/tillyouwake_app/adapter.py
+@@ -191,7 +191,8 @@
+                             "POST /model-settings/proactive-call HTTP/1.1",
+                             "POST /model-settings/route HTTP/1.1",
+                             "POST /model-settings/api/save HTTP/1.1",
+-                            "POST /model-settings/api/test HTTP/1.1"}:
++                            "POST /model-settings/api/test HTTP/1.1",
++                            "POST /model-settings/location HTTP/1.1"}:
+                 return await self._settings_request(lines[0], fields, reader, writer)
+             if lines[0] != "POST /turn HTTP/1.1":
+                 return await self._respond(writer, 400, {"error": "bad_request"})
+@@ -485,6 +486,9 @@
+                 result = self.model_settings.apply_route(body)
+             elif route == "POST /model-settings/api/save HTTP/1.1":
+                 result = self.model_settings.save_api(body)
++            elif route == "POST /model-settings/location HTTP/1.1":
++                from . import location_control
++                result = await asyncio.to_thread(location_control.update, body)
+             else:
+                 result = await asyncio.to_thread(self.model_settings.test_api, body)
+             return await self._respond(writer, 200, result)
+--- a/srv/tillyouwake-app-hermes/plugins/tillyouwake_app/model_settings.py
++++ b/srv/tillyouwake-app-hermes/plugins/tillyouwake_app/model_settings.py
+@@ -54,6 +54,15 @@
+ _windows_lock = threading.Lock()
+ 
+ 
++def _location_snapshot() -> dict:
++    """The location switch never breaks the settings page."""
++    try:
++        from . import location_control
++        return location_control.snapshot()
++    except Exception:  # noqa: BLE001
++        return {"enabled": False, "running": False, "status": "unavailable", "last_error": None}
++
++
+ @contextlib.contextmanager
+ def app_model_lock(home: Path, *, blocking: bool):
+     """Share a turn-wide lock with the App adapter; no QQ/TG lock is opened."""
+@@ -616,6 +625,7 @@
+             "lanes": self._lanes_state(config),
+             "recall": self._recall_state(config),
+             "proactive_call": proactive_settings(config),
++            "location": _location_snapshot(),
+             "api": {
+                 "providers": [{"id": name, "label": name.title(), "base_url": url}
+                               for name, url in API_BASES.items()],
+--- a/opt/tillyouwake-app-hermes-src/agent/turn_context.py
++++ b/opt/tillyouwake-app-hermes-src/agent/turn_context.py
+@@ -515,6 +515,7 @@
+             api_mode=getattr(agent, "api_mode", None) or "",
+             platform=getattr(agent, "platform", None) or "",
+             sender_id=getattr(agent, "_user_id", None) or "",
++            app_lane=getattr(agent, "_app_lane", None),
+         )
+         _ctx_parts: list[str] = []
+         for r in _pre_results:
+--- a/opt/tillyouwake-voice/voice_service.py
++++ b/opt/tillyouwake-voice/voice_service.py
+@@ -2440,6 +2440,7 @@
+                     PREFIX + "/model-settings/route": "/model-settings/route",
+                     PREFIX + "/model-settings/api/save": "/model-settings/api/save",
+                     PREFIX + "/model-settings/api/test": "/model-settings/api/test",
++                    PREFIX + "/model-settings/location": "/model-settings/location",
+                 }
+                 if path in settings_routes:
+                     if origin != "https://memory.tillyouwake.org":
+--- a/opt/tillyouwake-voice/settings_bridge.py
++++ b/opt/tillyouwake-voice/settings_bridge.py
+@@ -22,7 +22,8 @@
+ class AppSettingsBridge:
+     PATHS = frozenset({"/busy", "/status", "/model-settings", "/model-settings/cc", "/model-settings/recall",
+                        "/model-settings/route", "/model-settings/proactive-call",
+-                       "/model-settings/api/save", "/model-settings/api/test"})
++                       "/model-settings/api/save", "/model-settings/api/test",
++                       "/model-settings/location"})
+ 
+     def __init__(self, turn_url: str, token: str):
+         parsed = urlsplit(turn_url)
