@@ -42,6 +42,45 @@ def ask_key():
     return key
 
 
+def saved_apple_id():
+    for line in (DIRECTORY / 'credentials.env').read_text(encoding='utf-8').splitlines():
+        if line.startswith('ICLOUD_APPLE_ID='):
+            value = json.loads(line.split('=', 1)[1])
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    raise SystemExit('没有找到已保存的 Apple 账号，请回聊天确认。')
+
+
+def relogin():
+    """Sign in again with her password (+ Apple's code if asked), keeping device, AMap Key, coordinate
+    system, route and switch untouched. Writes no configuration; the new session lands in cookies/."""
+    if os.geteuid() != 0 or not sys.stdin.isatty():
+        raise SystemExit('请用 ssh -t 在交互终端运行此入口。')
+    os.umask(0o077)
+    config = json.loads(CONFIG.read_text())
+    if not config.get('device_id') or config.get('icloud_region') != 'cn':
+        raise SystemExit('还没有完成初次接入，请回聊天确认。')
+    if subprocess.call(['systemctl', 'is-active', '--quiet', 'tillyouwake-location']) == 0:
+        raise SystemExit('定位采集正在运行，说明登录是好的，不需要重新登录。')
+    apple_id = saved_apple_id()
+    print('重新登录 Apple：沿用已保存的账号、设备、高德 Key 和坐标设置，这些都不会改，也不会动定位开关。')
+    print('接下来输入 Apple 密码（只用这一次，不保存）；如果 Apple 要验证码，再输入手机上收到的 6 位数。')
+    print('登录后会读一次设备列表（Apple 查找会顺带返回位置，不保存、不显示）。整个过程最多 10 分钟，失败就停下，不会自动重试。')
+    print('进行中请先别在 App 里开关定位。\n')
+    env = dict(os.environ, ICLOUD_APPLE_ID=apple_id, HOME='/var/lib/tillyouwake-location', PYTHONIOENCODING='utf-8')
+    env.pop('ICLOUD_PASSWORD', None)
+    try:
+        code = subprocess.call(['runuser', '-u', 'tillyouwake-location', '--preserve-environment', '--',
+                                '/opt/tillyouwake-location/.venv/bin/python',
+                                '/opt/tillyouwake-location/collector.py', '--login', '--fresh'], env=env, timeout=600)
+    except subprocess.TimeoutExpired:
+        raise SystemExit('\n超过 10 分钟没有完成，已停下。设置都没改；把这句话告诉 Codex。')
+    if code:
+        raise SystemExit('重新登录没有完成，设置都没改。把上面的提示告诉 Codex 即可，不要发密码或验证码。')
+    print('\n重新登录成功，设置都没改。现在到 App「模型与连接」把定位关掉再打开一次，'
+          '等一分钟点“刷新状态”，把显示的文字告诉 Codex。')
+
+
 def main(resume=False):
     if os.geteuid() != 0 or not sys.stdin.isatty():
         raise SystemExit('请用 ssh -t 在交互终端运行此入口。')
@@ -111,6 +150,6 @@ if __name__ == '__main__':
         print('PASS: offline credential encoding and atomic configuration; no Apple/AMap calls.')
     else:
         try:
-            main(resume='--resume' in sys.argv)
+            relogin() if '--relogin' in sys.argv else main(resume='--resume' in sys.argv)
         except (KeyboardInterrupt, EOFError):
-            raise SystemExit('\n已取消，持续定位没有开启。')
+            raise SystemExit('\n已取消，没有保存任何设置。')

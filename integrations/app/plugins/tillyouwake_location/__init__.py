@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 CONFIG = Path("/etc/tillyouwake-location/config.json")
 LATEST = Path("/var/lib/tillyouwake-location/latest.json")
+PLACES = Path("/etc/tillyouwake-location/places.json")
 FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 ADDRESS_REUSE_M = 100
@@ -46,13 +47,30 @@ def current(config: Any, snapshot: Any) -> dict | None:
     return snapshot
 
 
+def load_places(path: Path | None = None) -> list:
+    """Her named places (name + centre + radius); unreadable or malformed entries are ignored."""
+    data = _load(path or PLACES)
+    items = data.get("places") if isinstance(data, dict) else None
+    return [p for p in items if isinstance(p, dict) and isinstance(p.get("name"), str)
+            and all(isinstance(p.get(k), (int, float)) for k in ("lat", "lon", "radius_m"))] \
+        if isinstance(items, list) else []
+
+
+def place_names(snapshot: dict, places: list) -> list:
+    """Names of saved places this fix lies inside; a fix whose error exceeds a place's radius never names it."""
+    acc = float(snapshot.get("accuracy_m") or 0)
+    lat, lon = float(snapshot["latitude"]), float(snapshot["longitude"])
+    return [p["name"] for p in places if p.get("crs") == snapshot.get("source_crs") and acc <= p["radius_m"]
+            and _distance_m(p["lat"], p["lon"], lat, lon) <= p["radius_m"]]
+
+
 def _when(ts: float, now: float) -> str:
     moment = dt.datetime.fromtimestamp(ts, SH)
     today = dt.datetime.fromtimestamp(now, SH).date()
     return moment.strftime("%H:%M" if moment.date() == today else "%m月%d日 %H:%M")
 
 
-def format_location(snapshot: dict | None, now: float) -> str:
+def format_location(snapshot: dict | None, now: float, places: list | None = None) -> str:
     if snapshot is None:
         return ""
     if not snapshot:
@@ -70,6 +88,11 @@ def format_location(snapshot: dict | None, now: float) -> str:
         return f"[位置] 最后已知：{near or coords}；设备定位：{when}，已超过 5 分钟，不能据此判断现在仍在这里。"
     accuracy = float(snapshot.get("accuracy_m") or 0)
     head = f"附近：{near}" if near else "地址未更新"
+    names = place_names(snapshot, places or [])
+    if len(names) == 1:
+        head += f"；常用地点：「{names[0]}」附近"
+    elif names:
+        head += "；常用地点：" + "".join(f"「{n}」" for n in names) + "都在附近，分不清是哪个"
     text = f"[位置] {head}；坐标：{coords}；设备定位：{when}；误差约{round(accuracy)}米。"
     if accuracy > GOOD_ACCURACY_M:
         text = text[:-1] + "，误差较大，不可靠。"
@@ -80,7 +103,7 @@ def pre_llm_call(*_args: Any, platform: Any = None, app_lane: Any = None, **_kwa
     if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane != "text":
         return None
     import time
-    text = format_location(current(_load(CONFIG), _load(LATEST)), time.time())
+    text = format_location(current(_load(CONFIG), _load(LATEST)), time.time(), load_places())
     return {"context": text} if text else None
 
 
@@ -88,4 +111,4 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", pre_llm_call)
 
 
-__all__ = ["register", "pre_llm_call", "format_location", "current"]
+__all__ = ["register", "pre_llm_call", "format_location", "current", "load_places", "place_names"]

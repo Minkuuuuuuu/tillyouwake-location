@@ -1,5 +1,42 @@
+diff --git a/opt/tillyouwake-memory/web/chat-models.css b/opt/tillyouwake-memory/web/chat-models.css
+index 13508ee..6ae80d1 100644
+--- a/opt/tillyouwake-memory/web/chat-models.css
++++ b/opt/tillyouwake-memory/web/chat-models.css
+@@ -107,3 +107,32 @@ body.v4 .chat-view .chat-models-effort:has(input:focus-visible) .chat-models-eff
+ body.v4 .chat-view .chat-models-efforts:disabled .chat-models-effort-text { cursor: default; opacity: .6; }
+ body.v4 .chat-view .chat-models-warn { margin: 12px 0 0; padding: 9px 12px; border-left: 2px solid #c98a3a; border-radius: 0 10px 10px 0; background: color-mix(in srgb, #c98a3a 12%, transparent); font-size: 12.5px; line-height: 1.6; }
+ body.v4 .chat-view .chat-models-warn[hidden] { display: none; }
++
++/* Location shares the existing settings page and only displays confirmed server state. */
++body.v4 .chat-view .chat-location { margin-top: 14px; padding: 9px 13px 12px; border: 1px solid var(--line); border-radius: 14px; }
++body.v4 .chat-view .chat-location label.chat-location-switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; margin: 0; color: var(--ink); cursor: pointer; }
++body.v4 .chat-view .chat-location-switch b { font-size: 15px; font-weight: 600; }
++body.v4 .chat-view .chat-location .chat-location-switch input { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 44px; height: 27px; min-height: 27px; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 20px; background: color-mix(in srgb, var(--ink) 16%, transparent); cursor: pointer; }
++body.v4 .chat-view .chat-location-switch input::before { content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px; border-radius: 50%; background: var(--drawer-tint-solid, #f7f8f5); box-shadow: 0 1px 3px #0002; }
++body.v4 .chat-view .chat-location .chat-location-switch input:checked { background: var(--ink); border-color: var(--ink); }
++body.v4 .chat-view .chat-location-switch input:checked::before { transform: translateX(17px); }
++body.v4 .chat-view .chat-location-switch input:disabled { opacity: .45; cursor: default; }
++body.v4 .chat-view .chat-location :is(input, button):focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
++body.v4 .chat-view .chat-location p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
++body.v4 .chat-view .chat-location [data-role="location-status"] { color: var(--ink); font-size: 13px; }
++body.v4 .chat-view .chat-location-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 5px; }
++body.v4 .chat-view .chat-location-actions button { min-height: 40px; padding: 4px 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
++body.v4 .chat-view .chat-location-actions button:disabled { opacity: .45; cursor: default; }
++body.v4 .chat-view .chat-location [hidden] { display: none; }
++body.v4 .chat-view .chat-location .chat-location-preview { margin-top: 6px; padding: 7px 10px; border-radius: 10px; background: color-mix(in srgb, var(--ink) 7%, transparent); }
++body.v4 .chat-view .chat-location-preview span { display: block; font-size: 11px; }
++body.v4 .chat-view .chat-location-places { margin-top: 6px; }
++body.v4 .chat-view .chat-location-places ul { margin: 0; padding: 0; list-style: none; }
++body.v4 .chat-view .chat-location-places li { display: flex; align-items: center; gap: 12px; min-height: 32px; color: var(--ink); font-size: 13px; }
++body.v4 .chat-view .chat-location-places li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
++body.v4 .chat-view .chat-location-places li button { min-height: 32px; padding: 2px 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
++body.v4 .chat-view .chat-location-places form { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
++body.v4 .chat-view .chat-model-settings .chat-location-places form input { flex: 1; min-width: 0; height: 36px; min-height: 36px; padding: 0 10px; font-size: 13px; }
++body.v4 .chat-view .chat-location-places form button { flex: none; min-height: 36px; padding: 0 14px; font-size: 13px; }
++body.v4 .chat-view .chat-location-places :disabled { opacity: .45; cursor: default; }
++body.v4 .chat-view .chat-location-preview output { display: block; color: var(--ink); font-size: 12.5px; line-height: 1.55; }
 diff --git a/opt/tillyouwake-memory/web/chat-models.js b/opt/tillyouwake-memory/web/chat-models.js
-index 215496d..86b5255 100644
+index 215496d..3b59491 100644
 --- a/opt/tillyouwake-memory/web/chat-models.js
 +++ b/opt/tillyouwake-memory/web/chat-models.js
 @@ -14,7 +14,8 @@
@@ -12,13 +49,19 @@ index 215496d..86b5255 100644
    const custom = "__custom";
    // CLI 2.1.280 catalog: these cannot run with native thinking off (contract, rejects_disabled_thinking).
    // Only a hint before saving; the service's warnings and native_thinking are what the page reports after.
-@@ -36,6 +37,13 @@
+@@ -36,6 +37,19 @@
        </button>
      </div>
      <p class="chat-models-notice" data-role="lanes-notice" role="status" aria-live="polite"></p>
 +    <section class="chat-location" aria-label="定位设置">
 +      <label class="chat-location-switch"><b>定位</b><input type="checkbox" role="switch" data-role="location-toggle" aria-label="定位" aria-describedby="chat-location-status chat-location-note" disabled></label>
 +      <p id="chat-location-status" data-role="location-status" role="status" aria-live="polite">正在读取定位状态…</p>
++      <p class="chat-location-preview" data-role="location-preview" hidden><span>App 文字聊天此刻会附上这段位置</span><output></output></p>
++      <div class="chat-location-places">
++        <ul data-role="place-list" aria-label="常用地点"></ul>
++        <form data-form="place-mark"><input name="name" maxlength="12" placeholder="地点名，如 实验室" aria-label="地点名" autocomplete="off" required><button type="submit">标记当前位置</button></form>
++        <p data-role="place-hint"></p>
++      </div>
 +      <p id="chat-location-note">关闭后停止查询，不再提供新位置或触发移动唤醒。</p>
 +      <div class="chat-location-actions"><button type="button" data-action="location-refresh">刷新状态</button><button type="button" data-action="location-retry" hidden>重试</button></div>
 +      <p class="chat-models-notice" data-role="location-notice" role="status" aria-live="polite"></p>
@@ -26,7 +69,7 @@ index 215496d..86b5255 100644
      <div class="chat-drawer-list">
        <button type="button" class="chat-drawer-row" data-drawer-page="api">
          <span>API 模型与连接</span><span class="chat-drawer-value"><span data-role="api-summary">尚未开放</span><span class="chat-drawer-chev" aria-hidden="true">›</span></span>
-@@ -105,6 +113,11 @@
+@@ -105,6 +119,25 @@
    const recallNote = find('[data-role="recall-note"]');
    const recallConfirm = find('[data-role="recall-confirm"]');
    const recallNotice = find('[data-role="recall-notice"]');
@@ -35,10 +78,24 @@ index 215496d..86b5255 100644
 +  const locationNotice = find('[data-role="location-notice"]');
 +  const locationRefresh = find('[data-action="location-refresh"]');
 +  const locationRetry = find('[data-action="location-retry"]');
++  const locationPreview = find('[data-role="location-preview"]');
++  const placeList = find('[data-role="place-list"]');
++  const placeForm = find('[data-form="place-mark"]');
++  const placeHint = find('[data-role="place-hint"]');
++  const placeText = {
++    location_off: "打开定位后才能标记当前位置。",
++    no_fix: "还没有可用的定位，稍后点“刷新状态”再试。",
++    fix_stale: "定位超过 5 分钟没更新，稍后刷新再标记。",
++    fix_imprecise: "现在定位误差较大，换到窗边或室外，稍后刷新再标记。",
++    name_taken: "这个名字已经用过了。",
++    too_close: "离已标的地点不到 60 米，两个范围会重叠、分不清，没有保存。",
++    limit: "最多标 20 个地点，先删掉不用的。",
++    not_found: "这个地点已经不在了，请刷新。",
++  };
    // Ombre breath "mode" for the automatic recall before each reply. No saved mode = the old mixed
    // recall (not the same as "hybrid"); 祂's own breath calls are never changed from here.
    const recallModes = {
-@@ -159,6 +172,60 @@
+@@ -159,6 +192,110 @@
      return payload;
    }
  
@@ -59,6 +116,32 @@ index 215496d..86b5255 100644
 +    locationRetry.hidden = !(retryStop || retryStart);
 +    locationRetry.disabled = busy;
 +    locationRetry.textContent = retryStop ? "重试关闭" : "重试开启";
++    // Same text the model gets; only while on, never an old point after switching off.
++    const preview = value?.enabled === true && typeof value.preview === "string" ? value.preview : "";
++    locationPreview.hidden = state.locationSaving || !preview;
++    locationPreview.querySelector("output").textContent = preview;
++    const places = Array.isArray(value?.places) ? value.places : [];
++    placeList.replaceChildren(...places.map(place => {
++      const item = document.createElement("li");
++      const name = document.createElement("span");
++      name.textContent = `${place.name}（约 ${place.radius_m} 米内）`;
++      const rename = document.createElement("button");
++      rename.type = "button"; rename.textContent = "改名"; rename.disabled = busy;
++      rename.addEventListener("click", () => {
++        const next = window.prompt("新名字（1–12 个字）", place.name);
++        if (next && next.trim() !== place.name) savePlace({ action: "rename", id: place.id, name: next.trim() });
++      });
++      const remove = document.createElement("button");
++      remove.type = "button"; remove.textContent = "删除"; remove.disabled = busy;
++      remove.addEventListener("click", () => {
++        if (window.confirm(`删除「${place.name}」？`)) savePlace({ action: "delete", id: place.id });
++      });
++      item.append(name, rename, remove);
++      return item;
++    }));
++    const blocker = value ? value.mark_blocker : "location_off";
++    for (const control of placeForm.elements) control.disabled = busy || Boolean(blocker);
++    placeHint.textContent = placeText[blocker] || "人在那里时标记，以后在约 30 米内会提示“某某附近”。";
 +    if (state.locationSaving) return;
 +    if (!value || value.status === "unavailable") locationStatus.textContent = "暂时无法确认定位状态，请刷新重试。";
 +    else if (!value.enabled && value.running) locationStatus.textContent = "位置已暂停，采集尚未完全停止，可以重试关闭。";
@@ -92,6 +175,30 @@ index 215496d..86b5255 100644
 +      paintLocation();
 +    }
 +  }
++  async function savePlace(place) {
++    if (state.locationSaving || state.loading || !locationValue()) return;
++    state.locationSaving = true;
++    locationNotice.textContent = "";
++    paintLocation();
++    try {
++      await request(`${base}/location`, "POST", { place });
++      if (place.action === "mark") { placeForm.reset(); locationNotice.textContent = `已标记「${place.name}」。`; }
++    } catch (error) {
++      const key = String(error?.code || "").replace(/^place_/, "");
++      locationNotice.textContent = error?.code === "invalid_place_name"
++        ? "名字 1–12 个字，只能用文字、数字、空格、-、·。"
++        : placeText[key] || errorText(error);
++    } finally {
++      await load();
++      state.locationSaving = false;
++      paintLocation();
++    }
++  }
++  placeForm.addEventListener("submit", event => {
++    event.preventDefault();
++    const name = placeForm.elements.name.value.trim();
++    if (name) savePlace({ action: "mark", name });
++  });
 +  locationToggle.addEventListener("change", () => saveLocation(locationToggle.checked));
 +  locationRetry.addEventListener("click", () => saveLocation(locationValue()?.enabled === true));
 +  locationRefresh.addEventListener("click", () => { locationNotice.textContent = ""; load(); });
@@ -99,7 +206,7 @@ index 215496d..86b5255 100644
    /* ---------- reading one lane ---------- */
    // The text lane is the top-level cc block. The phone lane has its own block only when the service
    // runs it as its own lane (lanes.phone.cc); otherwise the phone shares the text settings.
-@@ -452,12 +519,19 @@
+@@ -452,12 +589,19 @@
      stateLine.textContent = problems.length ? "App 服务报告电话/文字分线配置有问题，暂时不收新消息。需要检查服务端配置。" : "";
      paintLanes();
      paintApi(data.api || {});
@@ -121,7 +228,7 @@ index 215496d..86b5255 100644
      // Re-reading after a save or on re-open keeps the last real values on screen meanwhile.
      if (!state.data) stateLine.textContent = "正在读取 App 私聊设置…";
      try {
-@@ -475,6 +549,7 @@
+@@ -475,6 +619,7 @@
        if (!editRoot.hidden) paintEditor();
      } finally {
        state.loading = false;
@@ -129,35 +236,8 @@ index 215496d..86b5255 100644
      }
    }
  
-
-diff --git a/opt/tillyouwake-memory/web/chat-models.css b/opt/tillyouwake-memory/web/chat-models.css
-index 13508ee..9c30b70 100644
---- a/opt/tillyouwake-memory/web/chat-models.css
-+++ b/opt/tillyouwake-memory/web/chat-models.css
-@@ -107,3 +107,20 @@ body.v4 .chat-view .chat-models-effort:has(input:focus-visible) .chat-models-eff
- body.v4 .chat-view .chat-models-efforts:disabled .chat-models-effort-text { cursor: default; opacity: .6; }
- body.v4 .chat-view .chat-models-warn { margin: 12px 0 0; padding: 9px 12px; border-left: 2px solid #c98a3a; border-radius: 0 10px 10px 0; background: color-mix(in srgb, #c98a3a 12%, transparent); font-size: 12.5px; line-height: 1.6; }
- body.v4 .chat-view .chat-models-warn[hidden] { display: none; }
-+
-+/* Location shares the existing settings page and only displays confirmed server state. */
-+body.v4 .chat-view .chat-location { margin-top: 14px; padding: 9px 13px 12px; border: 1px solid var(--line); border-radius: 14px; }
-+body.v4 .chat-view .chat-location label.chat-location-switch { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; margin: 0; color: var(--ink); cursor: pointer; }
-+body.v4 .chat-view .chat-location-switch b { font-size: 15px; font-weight: 600; }
-+body.v4 .chat-view .chat-location .chat-location-switch input { appearance: none; -webkit-appearance: none; position: relative; flex: none; width: 44px; height: 27px; min-height: 27px; padding: 0; margin: 0; border: 1px solid var(--line); border-radius: 20px; background: color-mix(in srgb, var(--ink) 16%, transparent); cursor: pointer; }
-+body.v4 .chat-view .chat-location-switch input::before { content: ""; position: absolute; top: 3px; left: 3px; width: 19px; height: 19px; border-radius: 50%; background: var(--drawer-tint-solid, #f7f8f5); box-shadow: 0 1px 3px #0002; }
-+body.v4 .chat-view .chat-location .chat-location-switch input:checked { background: var(--ink); border-color: var(--ink); }
-+body.v4 .chat-view .chat-location-switch input:checked::before { transform: translateX(17px); }
-+body.v4 .chat-view .chat-location-switch input:disabled { opacity: .45; cursor: default; }
-+body.v4 .chat-view .chat-location :is(input, button):focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
-+body.v4 .chat-view .chat-location p { margin: 3px 0 0; color: var(--dim); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-+body.v4 .chat-view .chat-location [data-role="location-status"] { color: var(--ink); font-size: 13px; }
-+body.v4 .chat-view .chat-location-actions { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 5px; }
-+body.v4 .chat-view .chat-location-actions button { min-height: 40px; padding: 4px 0; border: 0; background: none; color: var(--ink); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
-+body.v4 .chat-view .chat-location-actions button:disabled { opacity: .45; cursor: default; }
-+body.v4 .chat-view .chat-location [hidden] { display: none; }
-
 diff --git a/opt/tillyouwake-memory/web/index.html b/opt/tillyouwake-memory/web/index.html
-index 1f19449..8bd8544 100644
+index 1f19449..4a795b7 100644
 --- a/opt/tillyouwake-memory/web/index.html
 +++ b/opt/tillyouwake-memory/web/index.html
 @@ -17,7 +17,7 @@
@@ -165,7 +245,7 @@ index 1f19449..8bd8544 100644
    <link rel="stylesheet" href="/assets/chat-view.css?v=20261003bubbles1">
    <link rel="stylesheet" href="/assets/chat-drawer.css?v=20261003reset1">
 -  <link rel="stylesheet" href="/assets/chat-models.css?v=20260927chat7">
-+  <link rel="stylesheet" href="/assets/chat-models.css?v=20261003location1">
++  <link rel="stylesheet" href="/assets/chat-models.css?v=20261006places1">
    <link rel="stylesheet" href="/assets/chat-quote.css?v=20260927chat7">
    <link rel="stylesheet" href="/assets/chat-voice.css?v=20260929final1">
    <link rel="stylesheet" href="/assets/chat-search.css?v=20260927chat7">
@@ -174,6 +254,6 @@ index 1f19449..8bd8544 100644
    <script src="/assets/chat-search.js?v=20260927chat7" defer></script>
    <script src="/assets/chat-glass.js?v=20260927chat7" defer></script>
 -  <script src="/assets/chat-models.js?v=20260929final1" defer></script>
-+  <script src="/assets/chat-models.js?v=20261003location1" defer></script>
++  <script src="/assets/chat-models.js?v=20261006places2" defer></script>
  </body>
  </html>

@@ -1,5 +1,5 @@
 {
-  "exportedOn": "2026-10-05",
+  "exportedOn": "2026-10-06",
   "mainHead": "90eb11bfe2aed1bdd1fd0fda952371de6445903a",
   "appVoiceBaselineLf": {
     "opt/tillyouwake-app-hermes-src/agent/turn_context.py": {
@@ -24,8 +24,20 @@
       "sha256": "c7937d939bb379fefd2f5052d63909c4795397ee2f84ce27a58a039194e10db8"
     },
     {
+      "path": "README.md",
+      "sha256": "7be5796724df1140de10c55046bdcdf87ec19783079faccbd686c05a80643517"
+    },
+    {
+      "path": "SETUP.md",
+      "sha256": "8467eacfabac1ee21f2ab1891905b1454d8f9c3630fc2313ee6dfe0f045a1ac8"
+    },
+    {
+      "path": "VERIFICATION.md",
+      "sha256": "acbae725fb2e6af2812229c51704775fc362b098716e9e6d5a90af0b3dc5caff"
+    },
+    {
       "path": "collector.py",
-      "sha256": "a2d1f8540a64c7abc20314fa5932a1537ad62c767fb522c7d592c49f75f225d4"
+      "sha256": "df1ea9b3f6829595176612c4def88935df81dabd5400f23a78a8ea8094212232"
     },
     {
       "path": "config.example.json",
@@ -36,36 +48,36 @@
       "sha256": "b4dc53a1e8ce164e85953faf30c7a912044d0b4dac03d51f8c205e3d4981f10b"
     },
     {
-      "path": "integrations/app/plugins/tillyouwake_app/location_control.py",
-      "sha256": "4287d7de0842caa8aa5bda62ebe5bc766adef732c643ad628bc832205ae53ab6"
-    },
-    {
-      "path": "integrations/app/plugins/tillyouwake_location/plugin.yaml",
-      "sha256": "f42f7f7c94f78243ecae2500f8dbf106a149a3679a448cffff3df1e4034981e2"
-    },
-    {
-      "path": "integrations/app/plugins/tillyouwake_location/__init__.py",
-      "sha256": "c876154d0545c570faf8c3b7e133fdb4b633353598bb2b21442accf41c6db199"
+      "path": "integrations/README.md",
+      "sha256": "cd8d02b4bbc39f41273de488dae3a415e7a8d30ecf24e2768b9f98d3e1afbf4f"
     },
     {
       "path": "integrations/app-voice.patch",
       "sha256": "8dd96a963e465c1c87dabefe58c6eb8c390e0de965cbc17723e37bf76abefe48"
     },
     {
+      "path": "integrations/app/plugins/tillyouwake_app/location_control.py",
+      "sha256": "f6d1bce81793cd11dbc071c058089b0ddb3c1de455f632ae4992dfb44db090a3"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_location/__init__.py",
+      "sha256": "4a04bfce663c5e571460920d293afff894b6b92727bf167f99b07d9d28e96a54"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_location/plugin.yaml",
+      "sha256": "f42f7f7c94f78243ecae2500f8dbf106a149a3679a448cffff3df1e4034981e2"
+    },
+    {
       "path": "integrations/frontend.patch",
-      "sha256": "73cf5fa37fa76640b6aa6f2db6a09d82cf2b225ec8ec56b769a935e1db0b529d"
+      "sha256": "42718f1653fcb4f4f02216c808ca7006b2211941b2f3b620ab53dc49c950ea56"
     },
     {
       "path": "integrations/main-gateway.patch",
       "sha256": "70e7a3f1fba0413082a5d5bb7f95d4f416b769bfca2a23d876043556c95527fd"
     },
     {
-      "path": "integrations/README.md",
-      "sha256": "5fb05e963f370aeaf5312397842e4abbde98a0fb43653c32584ec01227b9a9af"
-    },
-    {
-      "path": "README.md",
-      "sha256": "c2c3e7891c28f6fe411fc9b12905f0df24c75b38bb8823874a290d0c97e4f76d"
+      "path": "integrations/proactive-rounds.patch",
+      "sha256": "be81edb013399016652c5498673b8623196e36617bf521be7bf7a9564fe328d8"
     },
     {
       "path": "requirements.txt",
@@ -73,11 +85,7 @@
     },
     {
       "path": "setup-login.py",
-      "sha256": "d4b150f8587209fdfb1dd0f43eec251b7c6d7c392a36d74a7b8e2f116a4fc1f5"
-    },
-    {
-      "path": "SETUP.md",
-      "sha256": "09949526c5a9eb46ad6acabbdf88e7fdb82ea0429f57743bae251c68644c0355"
+      "sha256": "b348963a759e380972a02400808b9b261fc47156e63fa6df99a758938c19ccd3"
     },
     {
       "path": "systemd/tillyouwake-location.service",
@@ -93,11 +101,23 @@
     },
     {
       "path": "tests/test_location_context.py",
-      "sha256": "43717dbc82a79ec5f28bff12250248a2d8dd69036a8bdf4f95617e6e6cb7d5e2"
+      "sha256": "aba4fb3c2e14f9eecb3572ade9e023b0196699917a7c7a71f79a486903a95205"
+    },
+    {
+      "path": "tests/test_location_preview.py",
+      "sha256": "0d1020c0d0abc80d3cffe203b370d7c0cd685998f39970e320b47cb67565a907"
     },
     {
       "path": "tests/test_location_settings.py",
       "sha256": "e2974254fb069bf69378faec6b49817a62c6b49d4ce7327c50e76a145add8b8a"
+    },
+    {
+      "path": "tests/test_places.py",
+      "sha256": "7068e0b65996b174c77d71aafba7f163ff9375ff4ba56198f81d9363d7853bb6"
+    },
+    {
+      "path": "tests/test_relogin.py",
+      "sha256": "1390cef3417468225e5d80ab647690c71b4e9dc5e9bc4745d66ba3dbdc8894b9"
     },
     {
       "path": "tests/test_resume_transport.py",
@@ -106,10 +126,6 @@
     {
       "path": "tests/test_setup_resume.py",
       "sha256": "17d31f024a3929c687317e907f3e91b152c133e70fc5c0baa5ccc59c4caa91fb"
-    },
-    {
-      "path": "VERIFICATION.md",
-      "sha256": "e6aebefd68b425232c696f3f760575336fad10d60ef46b7f2304ccbbd76b01b5"
     }
   ],
   "testPathAdaptations": "Tests use repository-relative paths; plugin lane assertion reads the integration patch, and its clock is fixed to the sample fixture time. Installed collector/helper/plugin sources unchanged.",
@@ -122,6 +138,14 @@
     },
     "opt/tillyouwake-memory/web/index.html": {
       "sha256_lf": "12afa07f55b8ed9d64b24c6348ac0af6f83108518ae3af090c3af5ef4ffd6102"
+    }
+  },
+  "proactiveBaseline": {
+    "opt/tillyouwake-memory/web/chat-history.js": {
+      "sha256": "7e20b876a8c829d52dbe9f0deb1928553d2de26b5799eefa05ee77da0e164d3d"
+    },
+    "opt/tillyouwake-voice/voice_service.py": {
+      "sha256": "93e3811703b8652c7521bb9b614b85d745497350f5d851855cdd7bd4c0068dac"
     }
   }
 }

@@ -15,3 +15,18 @@
 采集器、交互工具、位置插件、开关模块与部署源码一致；测试调整仓库相对路径，原 `turn_context` 参数断言改读对应接入补丁，并固定注入测试时钟，防止夹具随日期过期。部署与登录说明已更新，避免沿用旧的 shell source 凭据和一键重登指引。
 
 主网关 53 项及前端模拟 API 9 项是原部署的历史记录，本次只检查它们的接入补丁，不宣称重新跑完或完成所有真机验收。
+
+# 同步验证（2026-10-06）
+
+源码与生产当前部署逐文件一致（collector.py、setup-login.py、两个 App 插件文件；补丁应用后与线上 chat-models.js/.css、chat-history.js、voice_service.py 相同）。未改生产设置、未重启服务、未请求 Apple / 高德、未发模型消息。
+
+| 检查 | 结果 |
+|---|---|
+| `python -m unittest discover -s tests -p 'test_*.py'`（采集器 venv） | 45 项通过：原 27 + 重登 6 + 常用地点 7 + 预览 5；系统 Python 未装 pyicloud 时相关用例会导入失败 |
+| `setup-login.py --self-check` | 通过 |
+| `git apply --check integrations/frontend.patch` | 2026-10-03 定位前端部署前三文件，通过；index.html 仅改资源版本号 |
+| `git apply --check integrations/proactive-rounds.patch` | 基线 chat-history.js（2026-10-05）与 voice_service.py（2026-10-06 事件前），通过，结果与线上一致 |
+| SSE 端点（部署前，本机临时端口） | 3 项：无 Access 403、变更即推 rounds、开着的流不阻塞停止 |
+| 真实页面 + 模拟 API（headless Chromium） | 卡片预览 / 地点标记 / 关闭隐藏；空闲 25 秒无 /messages、隐藏无请求、回到前台补读且不重复 |
+
+未验证：经 Cloudflare 隧道的真实 SSE、手机耗电、真机上地点标记与主动回复即时出现。`main-gateway.patch`、`app-voice.patch` 本次未变。

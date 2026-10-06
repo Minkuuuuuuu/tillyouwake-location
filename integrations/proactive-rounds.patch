@@ -1,0 +1,151 @@
+diff --git a/opt/tillyouwake-memory/web/chat-history.js b/opt/tillyouwake-memory/web/chat-history.js
+index 904f6c7..8a7195a 100644
+--- a/opt/tillyouwake-memory/web/chat-history.js
++++ b/opt/tillyouwake-memory/web/chat-history.js
+@@ -15,7 +15,7 @@
+   const state = { available: false, probed: false, probing: false, cursor: null, windowCursor: null, loading: false,
+     retryTimer: 0, retryCount: 0, oldestAt: null, windowOldestAt: null, callRefreshTimer: 0,
+     callInitialLoading: false, callRefreshPending: false, callRefreshLoading: false, lastCallPollAt: 0,
+-    windowToken: 0 };
++    windowToken: 0, roundsLoading: false, roundsAgain: false };
+ 
+   function scheduleProbe() {
+     if (state.retryTimer || state.probed || document.hidden) return;
+@@ -320,13 +320,54 @@
+     } catch { /* the bubbles simply stay un-quotable until the next reconcile */ }
+   }
+ 
++  // Rounds the service opens by itself (a proactive wake: heartbeat, location move, …) are not polled
++  // by this page. The service announces them on /events; then the newest rounds are read once and any
++  // reply not yet here is placed by its time. Read-only: nothing is sent or re-run.
++  async function refreshRecentRounds() {
++    if (!state.available || document.hidden || timeline.mode !== "latest") return;
++    if (state.roundsLoading) { state.roundsAgain = true; return; }  // a read already under way may predate it
++    state.roundsLoading = true;
++    try {
++      const nodes = build(pageOf(await chat.request("/messages?limit=10"))?.entries || []);
++      if (!nodes.length || timeline.mode !== "latest") return;
++      const follow = timeline.nearBottom?.();
++      for (const node of nodes) {
++        const time = Date.parse(node.dataset.created);
++        const next = Number.isFinite(time) && [...timeline.list.querySelectorAll(":scope > .chat-entry")]
++          .find(other => Date.parse(other.dataset.created) > time);
++        if (next) next.before(node);
++        else timeline.list.append(node);
++      }
++      timeline.paintDays?.();
++      if (follow) timeline.toLatest?.();
++    } catch { /* the next poll or a reload shows it */ }
++    finally {
++      state.roundsLoading = false;
++      if (state.roundsAgain) { state.roundsAgain = false; void refreshRecentRounds(); }
++    }
++  }
++
++  // One stream only while the page is visible; every (re)connect and every return reads once to catch up.
++  let events = null;
++  function openEvents() {
++    if (events || document.hidden || !state.available || chat.preview || typeof EventSource !== "function") return;
++    events = new EventSource("/voice-api/v1/events");
++    events.addEventListener("open", () => void refreshRecentRounds());
++    events.addEventListener("rounds", () => void refreshRecentRounds());
++  }
++  function closeEvents() { events?.close(); events = null; }
++  chat.on("history-ready", detail => { if (detail?.available) openEvents(); });
++
+   chat.on("connected", retryNow);
+   window.addEventListener("online", retryNow);
+   document.addEventListener("visibilitychange", () => {
+-    if (!document.hidden) { retryNow(); scheduleCallRefresh(); }
++    if (document.hidden) { closeEvents(); return; }
++    retryNow(); scheduleCallRefresh();
++    if (events?.readyState === 2) closeEvents();  // refused (old service / login): try once per return
++    if (events) void refreshRecentRounds(); else openEvents();
+   });
+   chat.on("timeline-top", loadOlder);
+-  chat.on("timeline-latest", () => { paintEdge(); scheduleCallRefresh(); });
++  chat.on("timeline-latest", () => { paintEdge(); scheduleCallRefresh(); void refreshRecentRounds(); });
+   chat.on("call-state", detail => { if (detail?.busy === false) scheduleCallRefresh(); });
+   chat.on("quote-jump", jumpTo);
+   chat.on("jump", jumpTo);
+diff --git a/opt/tillyouwake-voice/voice_service.py b/opt/tillyouwake-voice/voice_service.py
+index 6242e38..02f2d71 100644
+--- a/opt/tillyouwake-voice/voice_service.py
++++ b/opt/tillyouwake-voice/voice_service.py
+@@ -2060,6 +2060,9 @@ class VoiceService:
+     def __init__(self, store: CallStore, verifier, provider, internal_token: str,
+                  settings_bridge=None):
+         self.store, self.verifier, self.provider = store, verifier, provider
++        # Rounds she did not open (proactive wakes) bump this; an open page waits on it via /events.
++        self._rounds_changed = threading.Condition()
++        self._rounds_seq = 0
+         self.internal_token = internal_token
+         self.settings_bridge = settings_bridge
+         # Flip only after the matching App-only Hermes gateway quote hook is deployed and verified.
+@@ -2257,7 +2260,8 @@ class VoiceService:
+             self._maybe_invite(mid, raw)
+             if reply_mode == "voice":
+                 self._synthesize_message(mid, delivery)
+-            self.store.settle_proactive(mid)
++            if self.store.settle_proactive(mid):
++                self.note_rounds_changed()
+         except Exception as exc:
+             logging.getLogger(__name__).warning(
+                 "text round failed message=%s chars=%d kind=%s", mid[:8], len(user_text or ""), _failure_kind(exc))
+@@ -2265,6 +2269,18 @@ class VoiceService:
+                 self.store.release_call_receipt(mid)
+             self.store.finish_message(mid, error="message_failed")
+ 
++    def note_rounds_changed(self):
++        with self._rounds_changed:
++            self._rounds_seq += 1
++            self._rounds_changed.notify_all()
++
++    def wait_rounds_changed(self, seen: int | None, timeout: float) -> int:
++        """The current change counter, after waiting up to ``timeout`` for it to move past ``seen``."""
++        with self._rounds_changed:
++            if seen is not None:
++                self._rounds_changed.wait_for(lambda: self._rounds_seq != seen, timeout)
++            return self._rounds_seq
++
+     def proactive_message(self, mid: str, text: str):
+         """Queue one proactive text round through the ordinary text pipeline."""
+         if self.store.add_proactive_message(mid, text):
+@@ -2429,6 +2445,28 @@ def make_handler(service: VoiceService):
+         def _path(self):
+             return self.path.split("?", 1)[0]
+ 
++        def _events(self):
++            """Server-sent events for an open chat page: "rounds" when a round she did not open has
++            finished (the page then reads /messages once), a comment every 50 s so the tunnel keeps the
++            idle stream. Nothing else is sent; the page closes it while hidden."""
++            self.send_response(200)
++            self.send_header("Content-Type", "text/event-stream")
++            self.send_header("Cache-Control", "no-store")
++            self.end_headers()
++            self.close_connection = True
++            seen = service.wait_rounds_changed(None, 0)
++            deadline = time.monotonic() + 3600  # the browser reconnects; no stream outlives an hour
++            try:
++                self.wfile.write(b"retry: 5000\n\n")
++                self.wfile.flush()
++                while time.monotonic() < deadline:
++                    now = service.wait_rounds_changed(seen, 50)
++                    self.wfile.write(b"event: rounds\ndata: {}\n\n" if now != seen else b": ping\n\n")
++                    self.wfile.flush()
++                    seen = now
++            except OSError:
++                pass
++
+         def _query(self, allowed: set[str]):
+             values = parse_qs(urlsplit(self.path).query, keep_blank_values=True, strict_parsing=True)
+             if set(values) - allowed or any(len(items) != 1 for items in values.values()):
+@@ -2452,6 +2490,8 @@ def make_handler(service: VoiceService):
+                 return self._json(200, {"native_foreground": service.native_foreground()})
+             if not self._auth():
+                 return
++            if path == PREFIX + "/events":
++                return self._events()
+             try:
+                 if path == PREFIX + "/calls/current":
+                     presence = self.headers.get("X-Tillyouwake-Presence")

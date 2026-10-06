@@ -24,6 +24,7 @@ class Tests(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         d = Path(self.dir.name)
         plugin.CONFIG, plugin.LATEST = d / "config.json", d / "latest.json"
+        plugin.PLACES = d / "places.json"  # never read the real places file
         plugin.CONFIG.write_text(json.dumps(CFG))
         plugin.LATEST.write_text(json.dumps(SNAP))
 

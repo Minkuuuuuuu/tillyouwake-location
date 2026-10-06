@@ -253,7 +253,7 @@ def _token_session(config: dict):
     return api
 
 
-def _service(config: dict, interactive: bool = False):
+def _service(config: dict, interactive: bool = False, fresh: bool = False):
     if config.get("icloud_edge") == "global":
         use_global_edge()
     if not interactive:
@@ -276,7 +276,7 @@ def _service(config: dict, interactive: bool = False):
     bound_timeouts(api.session)
     if interactive:
         print(f"正在连接 Apple 验证账号（每一步最多等约 {sum(HTTP_TIMEOUT)} 秒）……", flush=True)
-    api.authenticate()
+    api.authenticate(force_refresh=fresh)  # fresh: skip the saved web cookie, sign in with the password
     return api
 
 
@@ -288,13 +288,15 @@ _LOGIN_FAILURE = {
 }
 
 
-def login(config: dict) -> int:
+def login(config: dict, fresh: bool = False) -> int:
     """Interactive, run by her: password + 2FA, then list devices (ids/names only).
+    ``fresh`` (re-login keeping the settings): always a new sign-in, then only confirm that the
+    configured device is still on the account; prints no ids.
 
     Prints each stage and one classified line on failure; never a traceback, never secrets.
     """
     try:
-        api = _service(config, interactive=True)
+        api = _service(config, interactive=True, fresh=fresh)
         if api.requires_2fa:
             code = input("请输入 Apple 发到你设备上的 6 位验证码，然后按回车：").strip()
             print("正在提交验证码并建立会话……", flush=True)
@@ -304,6 +306,12 @@ def login(config: dict) -> int:
             if not api.is_trusted_session:
                 api.trust_session()
         print("登录成功，正在读取设备列表……", flush=True)
+        if fresh:
+            if config.get("device_id") in api.devices.devices:
+                print("找到了原来设置的那台设备。", flush=True)
+                return 0
+            print("账号里没有找到原来设置的那台设备。登录本身成功了，但定位还用不了，把这句话告诉 Codex。")
+            return 8
         for device_id, device in api.devices.devices.items():
             print(device_id, "|", getattr(device, "name", "?"), "|", getattr(device, "model_name", "?"))
         return 0
@@ -325,6 +333,18 @@ def _error_chain(exc: BaseException) -> list[str]:
         names.append(type(link).__name__)
         link = link.__cause__ or link.__context__
     return names
+
+
+def _http_code(exc: BaseException) -> int | None:
+    """First Apple/HTTP status number on the cause chain (never a body): 421 expired vs 5xx outage."""
+    seen, link = set(), exc
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        code = getattr(link, "code", None)
+        if str(code).isdigit():
+            return int(code)
+        link = link.__cause__ or link.__context__
+    return None
 
 
 def _save_resume_diagnostic(stage: str, host: str, routed: bool | None, exc: BaseException | None) -> None:
@@ -415,7 +435,7 @@ def run(config_path: Path = CONFIG) -> int:
             raise RuntimeError("login_required")
     except Exception as exc:  # noqa: BLE001
         kind = classify_error(exc)
-        log.warning("location login_failed kind=%s type=%s", kind, type(exc).__name__)
+        log.warning("location login_failed kind=%s type=%s code=%s", kind, type(exc).__name__, _http_code(exc))
         write_snapshot(latest, {"generation": config["generation"], "device_id": config["device_id"],
                                 "source_crs": config["source_crs"], "checked_at": time.time(),
                                 "status": "network_error" if kind == "network" else "needs_login",
@@ -460,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=CONFIG)
     parser.add_argument("--state-dir", type=Path, default=STATE_DIR)
     parser.add_argument("--login", action="store_true")
+    parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--global-edge", action="store_true")
@@ -467,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     STATE_DIR = args.state_dir
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if args.login:
-        return login(read_config(args.config) or {})
+        return login(read_config(args.config) or {}, fresh=args.fresh)
     if args.probe:
         return probe(read_config(args.config) or {})
     if args.resume:
