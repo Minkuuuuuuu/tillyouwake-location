@@ -12,6 +12,7 @@ root = Path(tempfile.mkdtemp())
     "class SettingsError(Exception):\n    def __init__(self, status, code):\n        super().__init__(code)\n"
     "        self.status, self.code = status, code\n")
 shutil.copy(APP / "tillyouwake_app/location_control.py", root / "plugins/tillyouwake_app/location_control.py")
+shutil.copy(APP / "tillyouwake_app/location_relogin.py", root / "plugins/tillyouwake_app/location_relogin.py")
 shutil.copy(APP / "tillyouwake_location/__init__.py", root / "plugins/tillyouwake_location/__init__.py")
 sys.path.insert(0, str(root))
 from plugins.tillyouwake_app import location_control as lc  # noqa: E402

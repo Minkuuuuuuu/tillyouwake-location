@@ -6,6 +6,8 @@ below is ever started/stopped. Never returns account, key or device id; the
 only location it returns is ``preview``: the exact [位置] text the App text lane
 would add right now (same formatter, so it is empty when switched off). Places
 are only named here (id, name, radius); their centres stay in places.json.
+Re-login to Apple ({"relogin": ...}) is location_relogin's; here it only gets the config lock,
+the "collector stopped" check, and the restart afterwards when the switch is already on.
 """
 from __future__ import annotations
 
@@ -23,11 +25,13 @@ import threading
 import time
 from pathlib import Path
 
+from . import location_relogin
 from .model_settings import SettingsError
 
 CONFIG = Path("/etc/tillyouwake-location/config.json")
 CREDENTIALS = Path("/etc/tillyouwake-location/credentials.env")
 LATEST = Path("/var/lib/tillyouwake-location/latest.json")
+LOGIN_OK = LATEST.with_name("login-ok.json")  # written by the collector after each successful re-login
 PLACES = CONFIG.with_name("places.json")
 PLACE_NAME = re.compile(r"[\w·\- ]{1,12}")
 PLACE_RADIUS_M = 30         # a "nearby" circle; circles of two places must not overlap
@@ -191,6 +195,63 @@ def _place(action) -> None:
             os.unlink(tmp)
 
 
+def _login_lost(latest) -> bool:
+    """The last collector run lost its login and no re-login has succeeded since."""
+    try:
+        return (isinstance(latest, dict) and latest.get("status") == "needs_login"
+                and float(latest.get("checked_at") or 0) > float((_load(LOGIN_OK) or {}).get("at") or 0))
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _relogin_view(config: dict, active: str) -> dict:
+    """Whether the card offers "重新登录 Apple"; the account is shown masked only."""
+    stopped = active in {"inactive", "failed"}
+    needed = stopped and _login_lost(_load(LATEST))
+    configured = _configured(config)
+    return {"needed": bool(needed and configured), "busy": location_relogin.active(),
+            "allowed": configured and stopped,
+            "account": location_relogin.account_hint(CREDENTIALS) if configured else None}
+
+
+def _relogin_ready() -> None:
+    config = _load(CONFIG)
+    if not isinstance(config, dict) or not _configured(config):
+        raise SettingsError(409, "location_not_configured")
+    if _active() not in {"inactive", "failed"}:
+        raise SettingsError(409, "relogin_collector_running")  # also: no cookie race with a live run
+
+
+def _after_relogin() -> None:
+    """The switch stays what it was; only when it is on, start the collector it already asked for."""
+    with _lock, open(CONFIG.with_name(".config.lock"), "a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        config = _load(CONFIG)
+        if isinstance(config, dict) and config.get("enabled") is True:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                _systemctl("start", "--no-block", UNIT)
+
+
+def _relogin(action) -> dict:
+    shapes = {"start": {"action", "password"}, "code": {"action", "flow", "code"},
+              "cancel": {"action", "flow"}, "status": {"action", "flow"}}
+    if not isinstance(action, dict) or shapes.get(action.get("action")) != set(action):
+        raise SettingsError(400, "invalid_relogin")
+    flow_id = None
+    if action["action"] == "start":
+        with _lock, open(CONFIG.with_name(".config.lock"), "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            flow_id = location_relogin.start(action["password"], CREDENTIALS, _relogin_ready, _after_relogin)
+    elif action["action"] == "code":
+        location_relogin.code(action["flow"], action["code"])
+    elif action["action"] == "cancel":
+        location_relogin.cancel(action["flow"])
+    else:
+        location_relogin.status(action["flow"])
+    flow = location_relogin.view() or {}
+    return {**snapshot(), "relogin_flow": {**flow, "id": flow_id} if flow_id else flow}
+
+
 def snapshot() -> dict:
     config = _load(CONFIG)
     if not isinstance(config, dict):
@@ -209,6 +270,8 @@ def snapshot() -> dict:
         mine = isinstance(latest, dict) and latest.get("generation") == config.get("generation")
         status = (latest.get("status") if mine else "waiting_fresh") or "waiting_fresh"
         error = latest.get("error") if mine else None
+        if status == "needs_login" and not _login_lost(latest):
+            status, error = "waiting_fresh", None  # signed in again since; the collector has not run yet
         if not running and status not in {"needs_login"}:
             status = "not_running"
     elif running:
@@ -216,10 +279,12 @@ def snapshot() -> dict:
     return {"enabled": enabled, "running": running, "status": status,
             "last_error": error if isinstance(error, str) else None,
             "preview": _preview(config) if enabled else None,
-            "places": places, "mark_blocker": blocker}
+            "places": places, "mark_blocker": blocker, "relogin": _relogin_view(config, active)}
 
 
 def update(payload) -> dict:
+    if isinstance(payload, dict) and set(payload) == {"relogin"}:
+        return _relogin(payload["relogin"])
     if isinstance(payload, dict) and set(payload) == {"place"}:
         with _lock, open(CONFIG.with_name(".config.lock"), "a") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)
@@ -237,6 +302,8 @@ def update(payload) -> dict:
         if want:
             if not _configured(config):
                 raise SettingsError(409, "location_not_configured")
+            if location_relogin.active():
+                raise SettingsError(409, "relogin_in_progress")  # the collector would race the sign-in
             if changed:
                 config.update(enabled=True, generation=int(config.get("generation") or 0) + 1,
                               enabled_since=time.time())

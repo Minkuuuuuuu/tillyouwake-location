@@ -8,6 +8,7 @@ Logs carry kinds only: never coordinates, addresses, account names or keys.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import math
@@ -253,7 +254,7 @@ def _token_session(config: dict):
     return api
 
 
-def _service(config: dict, interactive: bool = False, fresh: bool = False):
+def _service(config: dict, interactive: bool = False, fresh: bool = False, password: str | None = None):
     if config.get("icloud_edge") == "global":
         use_global_edge()
     if not interactive:
@@ -265,7 +266,7 @@ def _service(config: dict, interactive: bool = False, fresh: bool = False):
     apple_id = os.environ.get("ICLOUD_APPLE_ID", "").strip()
     if not apple_id:
         raise RuntimeError("apple_id_missing")
-    password = os.environ.get("ICLOUD_PASSWORD") or None
+    password = password or os.environ.get("ICLOUD_PASSWORD") or None
     if interactive and password is None:
         import getpass
         password = getpass.getpass("Apple ID 密码（不会保存）：")
@@ -288,6 +289,24 @@ _LOGIN_FAILURE = {
 }
 
 
+def _login_lock():
+    """One sign-in at a time (SSH --login and the App's --login-pipe share the cookie files).
+    Returns the held lock file, or None when another sign-in holds it."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE_DIR / ".login.lock", "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def _mark_login_ok() -> None:
+    """When the last re-login succeeded: an older needs_login snapshot no longer asks for one."""
+    write_snapshot(STATE_DIR / "login-ok.json", {"at": time.time()})
+
+
 def login(config: dict, fresh: bool = False) -> int:
     """Interactive, run by her: password + 2FA, then list devices (ids/names only).
     ``fresh`` (re-login keeping the settings): always a new sign-in, then only confirm that the
@@ -295,6 +314,10 @@ def login(config: dict, fresh: bool = False) -> int:
 
     Prints each stage and one classified line on failure; never a traceback, never secrets.
     """
+    lock = _login_lock()
+    if lock is None:
+        print("另一处正在登录 Apple（比如 App 里），等它结束再试。")
+        return 9
     try:
         api = _service(config, interactive=True, fresh=fresh)
         if api.requires_2fa:
@@ -308,6 +331,7 @@ def login(config: dict, fresh: bool = False) -> int:
         print("登录成功，正在读取设备列表……", flush=True)
         if fresh:
             if config.get("device_id") in api.devices.devices:
+                _mark_login_ok()
                 print("找到了原来设置的那台设备。", flush=True)
                 return 0
             print("账号里没有找到原来设置的那台设备。登录本身成功了，但定位还用不了，把这句话告诉 Codex。")
@@ -323,6 +347,58 @@ def login(config: dict, fresh: bool = False) -> int:
         code, message = _LOGIN_FAILURE[kind]
         print(f"{message}（类型：{kind}/{type(exc).__name__}）")
         return code
+    finally:
+        lock.close()
+
+
+def login_pipe(config: dict, stdin=None, stdout=None) -> int:
+    """The App's re-login, keeping every setting: the same steps as login(fresh=True), but the
+    password (first line) and, only if Apple asks, the 6-digit code (next line) arrive on stdin,
+    and each stage goes out as one JSON line on stdout. Nothing typed is echoed, logged or stored;
+    no ids, no location. A closed stdin or a malformed code ends the attempt; never retried."""
+    stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
+
+    def say(stage: str, kind: str | None = None) -> None:
+        stdout.write(json.dumps({"stage": stage, "kind": kind}) + "\n")
+        stdout.flush()
+
+    password = stdin.readline().rstrip("\n")
+    if not password:
+        say("failed", "cancelled")
+        return 130
+    lock = _login_lock()
+    if lock is None:
+        say("failed", "busy")
+        return 9
+    try:
+        say("signing_in")
+        api = _service(config, interactive=True, fresh=True, password=password)
+        password = None
+        if api.requires_2fa:
+            say("need_code")
+            code = stdin.readline().strip()
+            if not re.fullmatch(r"\d{6}", code):
+                say("failed", "cancelled")
+                return 130
+            say("verifying")
+            if not api.validate_2fa_code(code):
+                say("failed", "code_rejected")
+                return 1
+            if not api.is_trusted_session:
+                api.trust_session()
+        say("checking_device")
+        if config.get("device_id") not in api.devices.devices:
+            say("failed", "device_missing")
+            return 8
+        _mark_login_ok()
+        say("done")
+        return 0
+    except Exception as exc:  # noqa: BLE001 - one kind, never a message (it may carry URLs/bodies)
+        kind = classify_error(exc)
+        say("failed", kind)
+        return _LOGIN_FAILURE[kind][0]
+    finally:
+        lock.close()
 
 
 def _error_chain(exc: BaseException) -> list[str]:
@@ -480,6 +556,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=CONFIG)
     parser.add_argument("--state-dir", type=Path, default=STATE_DIR)
     parser.add_argument("--login", action="store_true")
+    parser.add_argument("--login-pipe", action="store_true")
     parser.add_argument("--fresh", action="store_true")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -489,6 +566,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if args.login:
         return login(read_config(args.config) or {}, fresh=args.fresh)
+    if args.login_pipe:
+        logging.getLogger().setLevel(logging.WARNING)  # stdout is the stage protocol; stderr is discarded
+        return login_pipe(read_config(args.config) or {})
     if args.probe:
         return probe(read_config(args.config) or {})
     if args.resume:

@@ -1,5 +1,5 @@
 {
-  "exportedOn": "2026-10-06",
+  "exportedOn": "2026-10-07",
   "mainHead": "90eb11bfe2aed1bdd1fd0fda952371de6445903a",
   "appVoiceBaselineLf": {
     "opt/tillyouwake-app-hermes-src/agent/turn_context.py": {
@@ -25,19 +25,19 @@
     },
     {
       "path": "README.md",
-      "sha256": "7be5796724df1140de10c55046bdcdf87ec19783079faccbd686c05a80643517"
+      "sha256": "7e0f146588549f2047227134e91fba8e14ca69b86fd50bee83b6d328430a9f0c"
     },
     {
       "path": "SETUP.md",
-      "sha256": "8467eacfabac1ee21f2ab1891905b1454d8f9c3630fc2313ee6dfe0f045a1ac8"
+      "sha256": "52fb2c1db9cb18d6fda4cfe8ab51757a842472704f5e69e159660ddedfcfb834"
     },
     {
       "path": "VERIFICATION.md",
-      "sha256": "acbae725fb2e6af2812229c51704775fc362b098716e9e6d5a90af0b3dc5caff"
+      "sha256": "c1a6cc1d1aeac5783eb3820ddac8ea5b97817acc1de59ab95ad15f54499deaec"
     },
     {
       "path": "collector.py",
-      "sha256": "df1ea9b3f6829595176612c4def88935df81dabd5400f23a78a8ea8094212232"
+      "sha256": "7a8ee6a1e2eca026aa8d036c0320af61e874b6aedfeda95517904f63bb7c5f6c"
     },
     {
       "path": "config.example.json",
@@ -49,7 +49,7 @@
     },
     {
       "path": "integrations/README.md",
-      "sha256": "cd8d02b4bbc39f41273de488dae3a415e7a8d30ecf24e2768b9f98d3e1afbf4f"
+      "sha256": "8483de9d7ab7eef2d07bbfada4beef8646ad4e98b59595e72b0ad3b57f5f5018"
     },
     {
       "path": "integrations/app-voice.patch",
@@ -57,7 +57,11 @@
     },
     {
       "path": "integrations/app/plugins/tillyouwake_app/location_control.py",
-      "sha256": "f6d1bce81793cd11dbc071c058089b0ddb3c1de455f632ae4992dfb44db090a3"
+      "sha256": "07c7996a75f2d919e79b6eb3695d3afff0c08902f2a8c6236bed191a21825bf4"
+    },
+    {
+      "path": "integrations/app/plugins/tillyouwake_app/location_relogin.py",
+      "sha256": "1f7f0c890660f2952e762f6b24e020611fb0393eb22036f785b71393f03e253d"
     },
     {
       "path": "integrations/app/plugins/tillyouwake_location/__init__.py",
@@ -80,6 +84,10 @@
       "sha256": "be81edb013399016652c5498673b8623196e36617bf521be7bf7a9564fe328d8"
     },
     {
+      "path": "integrations/relogin-frontend.patch",
+      "sha256": "5adef3b00924366aa27fba86da827a9d9f6873bda6d63e178a0e9dcdbd97da2d"
+    },
+    {
       "path": "requirements.txt",
       "sha256": "fc6822eeb88c1a43e9a6e70b04a908a93eb1dcf9c09e92779897efffc232a181"
     },
@@ -90,6 +98,14 @@
     {
       "path": "systemd/tillyouwake-location.service",
       "sha256": "aac860db21175ca46f40c03260173d1f001fce4c0f8553e2b09c8250d83b4934"
+    },
+    {
+      "path": "tests/fake_relogin_child.py",
+      "sha256": "f0c04828ad296144032d16d3b186689d297edc5007a46c666380d9e3f277f008"
+    },
+    {
+      "path": "tests/test_app_relogin.py",
+      "sha256": "3d7bbba5d3a7860b1b3a077bff73adebeb768bdbc258cc79b4dc51a57d8b0aeb"
     },
     {
       "path": "tests/test_collector_startup.py",
@@ -105,15 +121,19 @@
     },
     {
       "path": "tests/test_location_preview.py",
-      "sha256": "0d1020c0d0abc80d3cffe203b370d7c0cd685998f39970e320b47cb67565a907"
+      "sha256": "b7bf4945a085396e1720f78cf9aea423be4bbd23f52b620541ad2ce585724901"
     },
     {
       "path": "tests/test_location_settings.py",
-      "sha256": "e2974254fb069bf69378faec6b49817a62c6b49d4ce7327c50e76a145add8b8a"
+      "sha256": "1924ec6dc4c95e571734a3bcdafcda1859c303dbad2863dfded84ac00c16e3c2"
+    },
+    {
+      "path": "tests/test_login_pipe.py",
+      "sha256": "539b35fadc85b1689df22a27d9aef0766a05d096ff93b577dc80f6b541d449e6"
     },
     {
       "path": "tests/test_places.py",
-      "sha256": "7068e0b65996b174c77d71aafba7f163ff9375ff4ba56198f81d9363d7853bb6"
+      "sha256": "b83d74bca8a72a85f79d232f48a15aeb3dbc5965bf8912b60e5cacd5b318ed3e"
     },
     {
       "path": "tests/test_relogin.py",
@@ -146,6 +166,17 @@
     },
     "opt/tillyouwake-voice/voice_service.py": {
       "sha256": "93e3811703b8652c7521bb9b614b85d745497350f5d851855cdd7bd4c0068dac"
+    }
+  },
+  "reloginFrontendBaseline": {
+    "opt/tillyouwake-memory/web/chat-models.js": {
+      "sha256": "f22491a1fb36c9a51d764606df167d430ef22abd90ff4204dfc9589b84edea37"
+    },
+    "opt/tillyouwake-memory/web/chat-models.css": {
+      "sha256": "e529e0c3f91266d2a43dfd1eb653386126afd7c56978f749d6e1e1c920a1ab65"
+    },
+    "opt/tillyouwake-memory/web/index.html": {
+      "sha256": "88fcffc1d2708218201e37392b0d0fb259d9bb54e380d258bdc05bc5e44c3e2e"
     }
   }
 }

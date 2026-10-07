@@ -47,11 +47,11 @@ python3 /opt/tillyouwake-location/setup-login.py --resume
 ## 4. 开关与诊断
 
 - App 状态：`GET /voice-api/v1/model-settings` 的 `location` 字段。
-- App 开关：`POST /voice-api/v1/model-settings/location`，仅接受 `{"enabled": true/false}`，沿既有认证与 Origin 检查。
+- App 开关：`POST /voice-api/v1/model-settings/location`，接受 `{"enabled": true/false}`、`{"place": …}` 或 `{"relogin": …}`，沿既有认证与 Origin 检查。重登进行中拒绝开启定位（`relogin_in_progress`）。
 - 开启缺配置会拒绝；配置齐全不代表令牌有效。高德 Key 缺失时采集可只有坐标、无地址。
 - 关闭先写 false / 新 generation，再请求停止 unit；不一定同步等进程退出。采集发布和移动交付都重查状态，拒绝过代数据。
 - `status=ok` 的界面文案为“已开启，正在更新位置”；面板没有定时更新，需刷新状态或重开。
-- `needs_login` 时先保留配置与 cookies，再诊断账号会话；采集器不会自动进行密码/2FA重登。确认需要重登时，本人在 SSH 交互终端运行 `python3 /opt/tillyouwake-location/setup-login.py --relogin`（采集器停着时才可运行；不改任何配置），成功后在 App 关再开定位。
+- `needs_login` 时先保留配置与 cookies，再诊断账号会话；采集器不会自动进行密码/2FA重登。确认需要重登时，本人在 App 定位卡片点“重新登录 Apple”，输入密码（Apple 要求时再输入 6 位验证码）；或在 SSH 交互终端运行 `python3 /opt/tillyouwake-location/setup-login.py --relogin`。两者都只在采集器停着时可用、不改任何配置。App 重登成功后：开关原本开着则自动启动采集，原本关着则保持关闭；SSH 重登后在 App 关再开定位。
 - 常用地点由 App 卡片写入 `/etc/tillyouwake-location/places.json`（root 0600，与开关共用 `.config.lock`），属于本人数据，不进源码仓库或源码备份。
 - 启动时网络失败也会正常退出，避免自动认证循环；应先确认连通性，再由本人决定恢复采集。
 

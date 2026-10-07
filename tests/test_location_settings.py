@@ -19,8 +19,9 @@ def load_control(tmp):
         "class SettingsError(Exception):\n    def __init__(self, status, code):\n"
         "        super().__init__(code)\n        self.status, self.code = status, code\n")
     shutil.copy(STAGE / "plugins/tillyouwake_app/location_control.py", pkg / "location_control.py")
+    shutil.copy(STAGE / "plugins/tillyouwake_app/location_relogin.py", pkg / "location_relogin.py")
     sys.path.insert(0, tmp)
-    for name in ("fakepkg", "fakepkg.model_settings", "fakepkg.location_control"):
+    for name in ("fakepkg", "fakepkg.model_settings", "fakepkg.location_control", "fakepkg.location_relogin"):
         sys.modules.pop(name, None)
     return importlib.import_module("fakepkg.location_control")
 

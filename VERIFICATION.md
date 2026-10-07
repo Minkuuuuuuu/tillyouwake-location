@@ -30,3 +30,17 @@
 | 真实页面 + 模拟 API（headless Chromium） | 卡片预览 / 地点标记 / 关闭隐藏；空闲 25 秒无 /messages、隐藏无请求、回到前台补读且不重复 |
 
 未验证：经 Cloudflare 隧道的真实 SSE、手机耗电、真机上地点标记与主动回复即时出现。`main-gateway.patch`、`app-voice.patch` 本次未变。
+
+# App 内重新登录 Apple（2026-10-07）
+
+源码与生产部署逐文件一致（collector.py、location_control.py、location_relogin.py；`relogin-frontend.patch` 应用到 10-06 部署副本后与线上 chat-models.js/.css、index.html 相同）。部署时未改开关（保持关闭）、未请求 Apple / 高德、未发模型消息。
+
+| 检查 | 结果 |
+|---|---|
+| `python -m unittest discover -s tests -p 'test_*.py'`（采集器 venv） | 66 项通过：原 45 + 登录管道 10 + App 重登流程 11 |
+| `setup-login.py --self-check` | 通过 |
+| `git apply --check integrations/relogin-frontend.patch` | 2026-10-06 部署后的三个前端文件副本，通过 |
+| 真实页面 + 模拟 API（headless Chromium） | 入口仅在需要时出现；脱敏账号按文本渲染；密码 / 验证码提交后立即清空，不在 DOM 与 local/sessionStorage；登录中锁定开关；成功后开关仍关；取消、网络失败、忙碌提示 |
+| 线上（不触达 Apple） | App 重启后健康；快照 `relogin.needed=true`、开关关闭；以采集器用户真实拉起 `--login-pipe` 并给空密码，未登录即退出（cancelled）；登录锁可取得且拒绝第二个 |
+
+未验证：真实 Apple 登录、验证码推送与核对、登录后 Find My 设备确认，需本人真机完成。

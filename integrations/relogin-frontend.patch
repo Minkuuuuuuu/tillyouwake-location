@@ -1,0 +1,204 @@
+diff --git a/opt/tillyouwake-memory/web/chat-models.css b/opt/tillyouwake-memory/web/chat-models.css
+index 6ae80d1..e653372 100644
+--- a/opt/tillyouwake-memory/web/chat-models.css
++++ b/opt/tillyouwake-memory/web/chat-models.css
+@@ -136,3 +136,11 @@ body.v4 .chat-view .chat-model-settings .chat-location-places form input { flex:
+ body.v4 .chat-view .chat-location-places form button { flex: none; min-height: 36px; padding: 0 14px; font-size: 13px; }
+ body.v4 .chat-view .chat-location-places :disabled { opacity: .45; cursor: default; }
+ body.v4 .chat-view .chat-location-preview output { display: block; color: var(--ink); font-size: 12.5px; line-height: 1.55; }
++body.v4 .chat-view .chat-location-relogin { margin-top: 6px; }
++body.v4 .chat-view .chat-location-relogin > button { min-height: 36px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 18px; background: none; color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }
++body.v4 .chat-view .chat-location-relogin form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 4px; }
++body.v4 .chat-view .chat-model-settings .chat-location-relogin form input { box-sizing: border-box; width: 100%; min-width: 0; height: 36px; min-height: 36px; padding: 0 10px; font-size: 14px; }
++body.v4 .chat-view .chat-location-relogin form div { display: flex; gap: 8px; }
++body.v4 .chat-view .chat-location-relogin form button { min-height: 36px; padding: 0 14px; font-size: 13px; }
++body.v4 .chat-view .chat-location-relogin small { color: var(--dim); font-size: 11.5px; line-height: 1.5; }
++body.v4 .chat-view .chat-location-relogin :disabled { opacity: .45; cursor: default; }
+diff --git a/opt/tillyouwake-memory/web/chat-models.js b/opt/tillyouwake-memory/web/chat-models.js
+index 3b59491..0024a41 100644
+--- a/opt/tillyouwake-memory/web/chat-models.js
++++ b/opt/tillyouwake-memory/web/chat-models.js
+@@ -40,6 +40,17 @@
+     <section class="chat-location" aria-label="定位设置">
+       <label class="chat-location-switch"><b>定位</b><input type="checkbox" role="switch" data-role="location-toggle" aria-label="定位" aria-describedby="chat-location-status chat-location-note" disabled></label>
+       <p id="chat-location-status" data-role="location-status" role="status" aria-live="polite">正在读取定位状态…</p>
++      <div class="chat-location-relogin" data-role="relogin" hidden>
++        <button type="button" data-action="relogin-open">重新登录 Apple</button>
++        <form data-form="relogin" autocomplete="off" hidden>
++          <p data-role="relogin-account"></p>
++          <input type="password" name="secret" maxlength="256" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Apple 密码" aria-label="Apple 密码">
++          <input name="code" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code" placeholder="6 位验证码" aria-label="Apple 验证码" hidden>
++          <div><button type="submit" data-role="relogin-submit">登录</button><button type="button" data-action="relogin-cancel">取消</button></div>
++          <small>密码只用于这一次登录，不保存、不进聊天。账号、设备、地点和定位开关都不变。</small>
++        </form>
++        <p data-role="relogin-status" role="status" aria-live="polite"></p>
++      </div>
+       <p class="chat-location-preview" data-role="location-preview" hidden><span>App 文字聊天此刻会附上这段位置</span><output></output></p>
+       <div class="chat-location-places">
+         <ul data-role="place-list" aria-label="常用地点"></ul>
+@@ -125,6 +136,42 @@
+   const locationRefresh = find('[data-action="location-refresh"]');
+   const locationRetry = find('[data-action="location-retry"]');
+   const locationPreview = find('[data-role="location-preview"]');
++  const reloginBox = find('[data-role="relogin"]');
++  const reloginOpen = find('[data-action="relogin-open"]');
++  const reloginForm = find('[data-form="relogin"]');
++  const reloginSubmit = find('[data-role="relogin-submit"]');
++  const reloginCancel = find('[data-action="relogin-cancel"]');
++  const reloginAccount = find('[data-role="relogin-account"]');
++  const reloginStatus = find('[data-role="relogin-status"]');
++  // Re-login to Apple: the flow id lives only here, in memory; the password and the code are read
++  // once, cleared from the fields at once, and only sent to the location setting route.
++  const relogin = { open: false, flow: null, stage: null, kind: null, sending: false, timer: 0 };
++  const reloginStages = {
++    signing_in: "正在登录 Apple…",
++    need_code: "Apple 要验证码：输入发到你设备上的 6 位数字。",
++    verifying: "正在核对验证码…",
++    checking_device: "登录通过，正在确认原来那台设备…",
++  };
++  const reloginKinds = {
++    auth: "Apple 没有接受这次登录（密码或验证不对）。可以检查后再试一次。",
++    network: "连不上 Apple（网络超时），这不是密码问题，稍后再试。",
++    code_rejected: "验证码没有通过。可以重新开始登录。",
++    device_missing: "登录通过了，但账号里没有找到原来那台设备，定位还用不了。把这句话告诉 Codex。",
++    busy: "另一处正在登录 Apple（比如 SSH），等它结束再试。",
++    cancelled: "已取消，这次登录作废了。",
++    other: "登录中途出错了。稍后再试；多次失败就告诉 Codex。",
++  };
++  const reloginErrors = {
++    relogin_busy: "另一个登录正在进行，最多 5 分钟后会自动结束。",
++    relogin_collector_running: "定位采集正在运行，说明登录是好的，不需要重新登录。",
++    relogin_flow_gone: "这次登录已经结束了，需要的话重新开始。",
++    relogin_in_progress: "正在重新登录 Apple，等它结束再开定位。",
++    relogin_unavailable: "暂时没法开始登录，稍后再试。",
++    invalid_relogin: "密码不能为空，最长 256 个字符。",
++    invalid_relogin_code: "验证码是 6 位数字。",
++    relogin_not_waiting_code: "现在还不需要验证码，稍等一下。",
++    location_not_configured: "定位还没完成初次配置，不能在这里重新登录。",
++  };
+   const placeList = find('[data-role="place-list"]');
+   const placeForm = find('[data-form="place-mark"]');
+   const placeHint = find('[data-role="place-hint"]');
+@@ -200,9 +247,11 @@
+   function paintLocation() {
+     const value = locationValue();
+     const busy = state.locationSaving || state.loading;
++    paintRelogin();
+     locationToggle.checked = value?.enabled === true;
+     locationToggle.disabled = busy || !value || value.status === "unavailable"
+-      || (!value.enabled && (value.status === "needs_setup" || value.running));
++      || (!value.enabled && (value.status === "needs_setup" || value.running))
++      || reloginRunning() || value.relogin?.busy === true; // no collector next to a sign-in
+     locationRefresh.disabled = busy;
+     const retryStop = value && !value.enabled && value.running;
+     const retryStart = value && value.enabled && !value.running && value.status !== "needs_login";
+@@ -248,6 +297,88 @@
+     else locationStatus.textContent = "已开启，位置状态待确认，请刷新查看。";
+   }
+ 
++  function reloginRunning() { return Boolean(relogin.flow) && Object.hasOwn(reloginStages, relogin.stage || ""); }
++  function paintRelogin() {
++    const info = locationValue()?.relogin;
++    const mine = reloginRunning();
++    const offered = Boolean(info && (info.needed || info.busy)) || relogin.open || mine || Boolean(reloginStatus.textContent);
++    reloginBox.hidden = !offered;
++    reloginOpen.hidden = mine || relogin.open || !info?.needed || !info?.allowed || info?.busy;
++    reloginOpen.disabled = state.loading || state.locationSaving;
++    reloginForm.hidden = !(mine || relogin.open);
++    const needCode = mine && relogin.stage === "need_code";
++    reloginForm.elements.secret.hidden = mine;
++    reloginForm.elements.code.hidden = !needCode;
++    if (reloginForm.hidden) { reloginForm.elements.secret.value = ""; reloginForm.elements.code.value = ""; }
++    reloginSubmit.hidden = mine && !needCode;
++    reloginSubmit.textContent = needCode ? "提交验证码" : "登录";
++    reloginSubmit.disabled = relogin.sending;
++    reloginCancel.disabled = relogin.sending && !mine;
++    reloginAccount.textContent = info?.account ? `账号：${info.account}` : "";
++    if (mine) reloginStatus.textContent = reloginStages[relogin.stage];
++    else if (info?.busy && !relogin.flow) reloginStatus.textContent = reloginErrors.relogin_busy;
++  }
++  function reloginTake(result) {
++    const { relogin_flow: flow, ...location } = result || {};
++    if (state.data && typeof location.enabled === "boolean") state.data.location = location;
++    if (flow?.id) relogin.flow = flow.id;
++    if (flow && relogin.flow) { relogin.stage = flow.stage; relogin.kind = flow.kind; }
++    if (relogin.flow && !reloginRunning()) reloginFinish();
++  }
++  function reloginFinish() {
++    clearTimeout(relogin.timer);
++    const enabled = locationValue()?.enabled === true;
++    reloginStatus.textContent = relogin.stage === "done"
++      ? (enabled ? "重新登录好了，定位已重新开始采集，稍后点“刷新状态”看位置。" : "重新登录好了。定位仍是关闭的，需要时再打开。")
++      : relogin.stage === "expired" ? "超过 5 分钟没有完成，这次登录已作废。"
++      : relogin.stage === "cancelled" ? reloginKinds.cancelled
++      : reloginKinds[relogin.kind] || reloginKinds.other;
++    relogin.flow = null;
++    relogin.open = false;
++    load();
++  }
++  async function reloginSend(action) {
++    relogin.sending = true;
++    paintLocation();
++    try {
++      reloginTake(await request(`${base}/location`, "POST", { relogin: action }));
++    } catch (error) {
++      if (error?.code === "relogin_flow_gone") { relogin.flow = null; relogin.open = false; }
++      reloginStatus.textContent = reloginErrors[error?.code] || errorText(error);
++    } finally {
++      relogin.sending = false;
++      paintLocation();
++      clearTimeout(relogin.timer);
++      if (reloginRunning()) relogin.timer = setTimeout(() => reloginSend({ action: "status", flow: relogin.flow }), 1500);
++    }
++  }
++  reloginOpen.addEventListener("click", () => {
++    relogin.open = true;
++    reloginStatus.textContent = "";
++    paintLocation();
++    reloginForm.elements.secret.focus();
++  });
++  reloginForm.addEventListener("submit", event => {
++    event.preventDefault();
++    if (relogin.sending) return;
++    if (reloginRunning()) {
++      const code = reloginForm.elements.code.value.trim();
++      reloginForm.elements.code.value = "";
++      if (relogin.stage === "need_code") reloginSend({ action: "code", flow: relogin.flow, code });
++      return;
++    }
++    const password = reloginForm.elements.secret.value;
++    reloginForm.elements.secret.value = "";
++    if (!password) { reloginStatus.textContent = reloginErrors.invalid_relogin; return; }
++    reloginSend({ action: "start", password });
++  });
++  reloginCancel.addEventListener("click", () => {
++    if (reloginRunning()) { reloginSend({ action: "cancel", flow: relogin.flow }); return; }
++    relogin.open = false;
++    reloginStatus.textContent = "";
++    paintLocation();
++  });
++
+   async function saveLocation(enabled) {
+     if (state.locationSaving || state.loading || !locationValue()) return;
+     state.locationSaving = true;
+diff --git a/opt/tillyouwake-memory/web/index.html b/opt/tillyouwake-memory/web/index.html
+index f878341..1a3dc3f 100644
+--- a/opt/tillyouwake-memory/web/index.html
++++ b/opt/tillyouwake-memory/web/index.html
+@@ -17,7 +17,7 @@
+   <link rel="stylesheet" href="/assets/memory-shards.css?v=20260930panda1">
+   <link rel="stylesheet" href="/assets/chat-view.css?v=20261005calls1">
+   <link rel="stylesheet" href="/assets/chat-drawer.css?v=20261003reset1">
+-  <link rel="stylesheet" href="/assets/chat-models.css?v=20261006places1">
++  <link rel="stylesheet" href="/assets/chat-models.css?v=20261007relogin1">
+   <link rel="stylesheet" href="/assets/chat-quote.css?v=20261004hobby1">
+   <link rel="stylesheet" href="/assets/chat-voice.css?v=20260929final1">
+   <link rel="stylesheet" href="/assets/chat-search.css?v=20260927chat7">
+@@ -1247,6 +1247,6 @@
+   <script src="/assets/chat-history.js?v=20261006events1" defer></script>
+   <script src="/assets/chat-search.js?v=20260927chat7" defer></script>
+   <script src="/assets/chat-glass.js?v=20260927chat7" defer></script>
+-  <script src="/assets/chat-models.js?v=20261006places2" defer></script>
++  <script src="/assets/chat-models.js?v=20261007relogin1" defer></script>
+ </body>
+ </html>
