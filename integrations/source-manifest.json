@@ -25,7 +25,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "7e0f146588549f2047227134e91fba8e14ca69b86fd50bee83b6d328430a9f0c"
+      "sha256": "80675e09fdd719544b3cc85f3d41f08f7dd7846a2e67d1ad6f4ce649e7ff78c6"
     },
     {
       "path": "SETUP.md",
@@ -33,7 +33,7 @@
     },
     {
       "path": "VERIFICATION.md",
-      "sha256": "bff708a9b96e9d627e9db11f38dba75563b3c989024c2ffc035a482c55d187b6"
+      "sha256": "7cca8eb8483d30f39423866430f56be74988f202b11d3ab2b00bba575b1ddc26"
     },
     {
       "path": "collector.py",
