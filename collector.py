@@ -82,6 +82,9 @@ def classify_error(exc: BaseException) -> str:
     return "other"
 
 
+_last_path = {"path": None}  # path of the last Apple request (no host, no query): where a sign-in stopped
+
+
 def bound_timeouts(session: Any, token_only: bool = False) -> None:
     """Give this pyicloud session (only) a finite default timeout; explicit timeouts win."""
     original = session.request
@@ -89,6 +92,7 @@ def bound_timeouts(session: Any, token_only: bool = False) -> None:
         session.trust_env = False
 
     def request(method, url, **kwargs):
+        _last_path["path"] = urllib.parse.urlsplit(str(url)).path[:80]
         if token_only:
             kwargs["allow_redirects"] = False  # 307/308 must not resend the token POST
             kwargs["verify"] = True
@@ -358,8 +362,8 @@ def login_pipe(config: dict, stdin=None, stdout=None) -> int:
     no ids, no location. A closed stdin or a malformed code ends the attempt; never retried."""
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
 
-    def say(stage: str, kind: str | None = None) -> None:
-        stdout.write(json.dumps({"stage": stage, "kind": kind}) + "\n")
+    def say(stage: str, kind: str | None = None, **detail) -> None:
+        stdout.write(json.dumps({"stage": stage, "kind": kind, **detail}) + "\n")
         stdout.flush()
 
     password = stdin.readline().rstrip("\n")
@@ -395,7 +399,8 @@ def login_pipe(config: dict, stdin=None, stdout=None) -> int:
         return 0
     except Exception as exc:  # noqa: BLE001 - one kind, never a message (it may carry URLs/bodies)
         kind = classify_error(exc)
-        say("failed", kind)
+        # where it stopped, for the App's log: Apple's HTTP status, request path, exception types only
+        say("failed", kind, http=_http_code(exc), at=_last_path["path"], chain=_error_chain(exc)[:4])
         return _LOGIN_FAILURE[kind][0]
     finally:
         lock.close()

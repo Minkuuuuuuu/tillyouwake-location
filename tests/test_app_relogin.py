@@ -137,6 +137,19 @@ class Tests(unittest.TestCase):
         self.sys.state = "active"
         self.assertEqual(self.lc.snapshot()["status"], "waiting_fresh")
 
+    def test_failure_detail_is_sanitised_and_logged(self):
+        ok = self.lr._detail({"http": 401, "at": "/appleauth/auth/signin/complete", "chain": ["PyiCloudFailedLoginException", "PyiCloudAPIResponseException"]})
+        self.assertEqual(ok, "http=401 at=/appleauth/auth/signin/complete chain=PyiCloudFailedLoginException<-PyiCloudAPIResponseException")
+        bad = self.lr._detail({"http": "401 " + PASSWORD, "at": "/x?pw=" + PASSWORD, "chain": [PASSWORD + " x", 5]})
+        self.assertEqual(bad, "http=- at=- chain=-")
+        self.mode = "auth"
+        with self.assertLogs(self.lr.log, level="WARNING") as logs:
+            flow = self.post({"action": "start", "password": PASSWORD})["relogin_flow"]["id"]
+            self.wait_stage(flow, self.lr.ENDS)
+        text = "\n".join(logs.output)
+        self.assertIn("stage=failed kind=auth", text)
+        self.assertNotIn(PASSWORD, text)
+
     def test_success_switch_off_stays_off(self):
         result = self.post({"action": "start", "password": PASSWORD})
         flow = result["relogin_flow"]["id"]

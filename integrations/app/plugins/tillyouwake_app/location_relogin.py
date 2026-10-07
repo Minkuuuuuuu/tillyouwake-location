@@ -11,6 +11,7 @@ closes the pipe and kills what is left of the child's process group. Never retri
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
@@ -31,6 +32,9 @@ ENDS = {"done", "failed", "cancelled", "expired"}
 KINDS = {"auth", "network", "other", "code_rejected", "device_missing", "busy", "cancelled"}
 FLOW_ID = re.compile(r"[0-9a-f]{32}")
 CODE = re.compile(r"\d{6}")
+SAFE_PATH = re.compile(r"/[A-Za-z0-9/_.-]{0,80}")
+SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _flow: dict | None = None  # {"id", "proc", "stage", "kind", "deadline", "ended_at"}
 
@@ -94,10 +98,23 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
-def _end(flow: dict, stage: str, kind: str | None = None) -> None:
+def _detail(event: dict) -> str:
+    """Only Apple's HTTP status, the request path and exception type names; anything else dropped."""
+    http = event.get("http")
+    at = event.get("at")
+    chain = event.get("chain") if isinstance(event.get("chain"), list) else []
+    return "http=%s at=%s chain=%s" % (
+        http if isinstance(http, int) and not isinstance(http, bool) and 100 <= http <= 999 else "-",
+        at if isinstance(at, str) and SAFE_PATH.fullmatch(at) else "-",
+        "<-".join(n for n in chain[:4] if isinstance(n, str) and SAFE_NAME.fullmatch(n)) or "-")
+
+
+def _end(flow: dict, stage: str, kind: str | None = None, detail: str = "") -> None:
     """Caller holds _lock. Idempotent: the first end wins."""
     if flow["stage"] in ENDS:
         return
+    log.warning("location relogin end stage=%s kind=%s from=%s seconds=%d %s", stage, kind or "-",
+                flow["stage"], int(time.time() - flow["deadline"] + FLOW_SECONDS), detail)
     flow.update(stage=stage, kind=kind, ended_at=time.time())
     threading.Thread(target=_kill, args=(flow["proc"],), daemon=True).start()
 
@@ -123,7 +140,7 @@ def _read(flow: dict, on_done) -> None:
                     _end(flow, "done")
                     break
                 elif stage == "failed":
-                    _end(flow, "failed", kind if kind in KINDS else "other")
+                    _end(flow, "failed", kind if kind in KINDS else "other", _detail(event))
                     return
     except (OSError, ValueError):
         pass

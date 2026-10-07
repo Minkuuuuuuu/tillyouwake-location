@@ -120,6 +120,24 @@ class Tests(unittest.TestCase):
         rc, _, kind = self.run_pipe(error=TimeoutError("read timed out"))
         self.assertEqual((rc, kind), (3, "network"))
 
+    def test_failure_line_says_where_without_secrets(self):
+        class Resp(Exception):
+            code = 401
+        inner = Resp("body with " + PASSWORD)
+        outer = PyiCloudFailedLoginException("Invalid email/password combination.")
+        outer.__cause__ = inner
+        self.c._last_path["path"] = "/appleauth/auth/signin/complete"
+        def service(config, interactive=False, fresh=False, password=None):
+            raise outer
+        self.c._service = service
+        out = io.StringIO()
+        self.c.login_pipe({"device_id": "dev1"}, io.StringIO(PASSWORD + "\n"), out)
+        last = json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual((last["kind"], last["http"], last["at"]), ("auth", 401, "/appleauth/auth/signin/complete"))
+        self.assertEqual(last["chain"], ["PyiCloudFailedLoginException", "Resp"])
+        self.assertNotIn(PASSWORD, out.getvalue())
+        self.assertNotIn("body with", out.getvalue())
+
     def test_device_missing_keeps_old_needs_login(self):
         rc, _, kind = self.run_pipe(FakeApi(ids=("other",)))
         self.assertEqual((rc, kind), (8, "device_missing"))

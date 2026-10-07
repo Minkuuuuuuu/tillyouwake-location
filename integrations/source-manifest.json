@@ -33,11 +33,11 @@
     },
     {
       "path": "VERIFICATION.md",
-      "sha256": "c1a6cc1d1aeac5783eb3820ddac8ea5b97817acc1de59ab95ad15f54499deaec"
+      "sha256": "bff708a9b96e9d627e9db11f38dba75563b3c989024c2ffc035a482c55d187b6"
     },
     {
       "path": "collector.py",
-      "sha256": "7a8ee6a1e2eca026aa8d036c0320af61e874b6aedfeda95517904f63bb7c5f6c"
+      "sha256": "0dd69edc12b6eca9da538323aeabf42798a35089036fb4be376bae339a095dbf"
     },
     {
       "path": "config.example.json",
@@ -61,7 +61,7 @@
     },
     {
       "path": "integrations/app/plugins/tillyouwake_app/location_relogin.py",
-      "sha256": "1f7f0c890660f2952e762f6b24e020611fb0393eb22036f785b71393f03e253d"
+      "sha256": "eb0026341f8afe6c2dfdf13c2c43889af3d7b549031f59fb47d718e67134f2a6"
     },
     {
       "path": "integrations/app/plugins/tillyouwake_location/__init__.py",
@@ -105,7 +105,7 @@
     },
     {
       "path": "tests/test_app_relogin.py",
-      "sha256": "3d7bbba5d3a7860b1b3a077bff73adebeb768bdbc258cc79b4dc51a57d8b0aeb"
+      "sha256": "a0bdd0d7256ab3b8271de1cd3fdfc03f4e9d77c733f11b3f067572af27c944b8"
     },
     {
       "path": "tests/test_collector_startup.py",
@@ -129,7 +129,7 @@
     },
     {
       "path": "tests/test_login_pipe.py",
-      "sha256": "539b35fadc85b1689df22a27d9aef0766a05d096ff93b577dc80f6b541d449e6"
+      "sha256": "def666fbadd300fb966d212cb3cda73dd4d0adbe5bc00e7eb9ed4bf766ec0c2a"
     },
     {
       "path": "tests/test_places.py",
