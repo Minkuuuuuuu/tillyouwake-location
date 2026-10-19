@@ -32,10 +32,12 @@ class Tests(unittest.TestCase):
         self.dir.cleanup()
 
     @patch("time.time", return_value=NOW)
-    def test_location_text_lane_only(self, _clock):
+    def test_location_app_lanes_only(self, _clock):
         got = plugin.pre_llm_call(platform="tillyouwake_app", app_lane="text", session_id="s")
         self.assertTrue(got["context"].startswith("[位置] 附近：广州市天河区某路；坐标：23.123456,113.300000（WGS-84）"))
-        for lane in ("phone", None, "", "TEXT"):
+        # Since 2026-10-19 a call turn (the phone lane) carries the same line as a typed turn.
+        self.assertEqual(plugin.pre_llm_call(platform="tillyouwake_app", app_lane="phone"), got)
+        for lane in (None, "", "TEXT", "other"):
             self.assertIsNone(plugin.pre_llm_call(platform="tillyouwake_app", app_lane=lane))
         for plat in ("telegram", "qqbot", ""):
             self.assertIsNone(plugin.pre_llm_call(platform=plat, app_lane="text"))

@@ -1,4 +1,4 @@
-"""Her latest location as current-turn context for the App text lane (never phone)."""
+"""Her latest location as current-turn context for the App text lane and, since 2026-10-19, the phone lane."""
 from __future__ import annotations
 
 import datetime as dt
@@ -100,7 +100,8 @@ def format_location(snapshot: dict | None, now: float, places: list | None = Non
 
 
 def pre_llm_call(*_args: Any, platform: Any = None, app_lane: Any = None, **_kwargs: Any) -> dict | None:
-    if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane != "text":
+    # Both App lanes: her typed turns and each turn of a call (she asked for calls to carry it too).
+    if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane not in {"text", "phone"}:
         return None
     import time
     text = format_location(current(_load(CONFIG), _load(LATEST)), time.time(), load_places())
