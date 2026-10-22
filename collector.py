@@ -148,6 +148,29 @@ def normalize_fix(location: Any, now: float) -> dict | None:
     return {"latitude": lat, "longitude": lon, "accuracy_m": acc, "sampled_at": ts}
 
 
+def normalize_battery(content: Any, now: float) -> dict | None:
+    """Device content dict -> {level, charging, at} or None. Level is 0–1 float or None when invalid;
+    charging is True/False/None (None when status unclear); at is the normalization timestamp."""
+    if not isinstance(content, dict):
+        return None
+    level_raw = content.get("batteryLevel")
+    status_raw = content.get("batteryStatus")
+    try:
+        level = float(level_raw) if level_raw is not None else None
+        if level is not None and not (math.isfinite(level) and 0 <= level <= 1):
+            level = None
+    except (TypeError, ValueError):
+        level = None
+    charging = None
+    if isinstance(status_raw, str):
+        status_lower = status_raw.lower()
+        if "discharging" in status_lower or "notcharging" in status_lower or "not charging" in status_lower:
+            charging = False
+        elif "charging" in status_lower:
+            charging = True
+    return {"level": level, "charging": charging, "at": now} if level is not None else None
+
+
 def _address_needed(snap: dict, now: float) -> bool:
     if now - snap["sampled_at"] > FRESH_SECONDS or snap["accuracy_m"] > GOOD_ACCURACY_M:
         return False
@@ -162,8 +185,8 @@ def _address_needed(snap: dict, now: float) -> bool:
 def poll_once(config: dict, previous: dict | None, now: float,
               fetch: Callable[[], Any], geocode: Callable[[float, float, str], str] | None,
               weather: Callable[[str], dict] | None = None) -> dict:
-    """One poll. ``fetch`` returns the raw Find My location dict; ``geocode`` -> address text
-    (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``);
+    """One poll. ``fetch`` returns the raw Find My location dict or device content dict (with 'location' key);
+    ``geocode`` -> address text (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``);
     ``weather`` -> the sky over that district, asked only when the stored one is stale."""
     gen, device, crs = config["generation"], config["device_id"], config["source_crs"]
     prev = previous if (isinstance(previous, dict) and previous.get("generation") == gen
@@ -171,17 +194,30 @@ def poll_once(config: dict, previous: dict | None, now: float,
     since = float(config.get("enabled_since") or 0)
     snap: dict[str, Any] = {"generation": gen, "device_id": device, "source_crs": crs,
                             "checked_at": now, "status": "waiting_fresh", "error": None}
-    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather"):
+    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather", "battery"):
         if prev and key in prev:
             snap[key] = prev[key]
+    _battery_logged = {"done": False}
     try:
-        fix = normalize_fix(fetch(), now)
+        raw = fetch()
+        # Accept both old shape (pure location dict) and new shape (device content dict with 'location' key)
+        location = raw.get("location") if isinstance(raw, dict) and "location" in raw else raw
+        fix = normalize_fix(location, now)
         if fix is None:
             snap["error"] = "no_valid_fix"
         elif fix["sampled_at"] < since - FUTURE_SLACK:
             snap["error"] = "older_than_enable"
         elif "sampled_at" not in snap or fix["sampled_at"] > snap["sampled_at"]:
             snap.update(fix, fetched_at=now)
+        # Battery: extract when raw is device content dict
+        if isinstance(raw, dict) and "batteryLevel" in raw:
+            battery = normalize_battery(raw, now)
+            if battery is not None:
+                if "battery" not in snap or not _battery_logged["done"]:
+                    log.info("location battery level=%s charging=%s",
+                             battery["level"], battery["charging"])
+                    _battery_logged["done"] = True
+                snap["battery"] = battery
     except Exception as exc:  # noqa: BLE001 - one failed poll must not kill the loop
         snap["error"] = f"fetch_failed:{classify_error(exc)}:{type(exc).__name__}"
     if "sampled_at" in snap:
@@ -613,7 +649,8 @@ def run(config_path: Path = CONFIG) -> int:
 
         def fetch():
             api.devices.refresh(locate=True)
-            return api.devices.devices[config["device_id"]].location
+            device = api.devices.devices[config["device_id"]]
+            return device.data  # Return full device content dict (includes location and battery)
 
         snap = poll_once(config, previous, time.time(), fetch, geocode, weather)
         current = read_config(config_path)  # a late result never crosses a toggle
