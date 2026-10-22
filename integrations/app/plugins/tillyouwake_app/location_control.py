@@ -106,8 +106,11 @@ def _preview(config: dict) -> str | None:
     """The plugin's own formatter over the local snapshot; never a new Apple/AMap request."""
     try:
         plugin = _plugin()
-        return plugin.format_location(plugin.current(config, _load(LATEST)), time.time(),
-                                      plugin.load_places(PLACES)) or None
+        now = time.time()
+        snapshot = plugin.current(config, _load(LATEST))
+        parts = [plugin.format_location(snapshot, now, plugin.load_places(PLACES)),
+                 plugin.format_weather(snapshot, now) if hasattr(plugin, "format_weather") else ""]
+        return "\n".join(part for part in parts if part) or None
     except Exception:  # noqa: BLE001 - a preview never breaks the settings page
         return None
 

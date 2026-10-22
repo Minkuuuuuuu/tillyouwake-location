@@ -26,6 +26,10 @@ from typing import Any, Callable
 CONFIG = Path("/etc/tillyouwake-location/config.json")
 STATE_DIR = Path("/var/lib/tillyouwake-location")
 POLL_SECONDS = 60
+# Weather (AMap, same key as the address): asked at most every 10 min, or sooner when she enters another
+# district; a failed ask waits 5 min. Shares the poll loop — no extra process, a few KB in the snapshot.
+WEATHER_SECONDS = 600
+WEATHER_RETRY = 300
 FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 ADDRESS_REUSE_M = 100
@@ -156,15 +160,18 @@ def _address_needed(snap: dict, now: float) -> bool:
 
 
 def poll_once(config: dict, previous: dict | None, now: float,
-              fetch: Callable[[], Any], geocode: Callable[[float, float, str], str] | None) -> dict:
-    """One poll. ``fetch`` returns the raw Find My location dict; ``geocode`` -> address text."""
+              fetch: Callable[[], Any], geocode: Callable[[float, float, str], str] | None,
+              weather: Callable[[str], dict] | None = None) -> dict:
+    """One poll. ``fetch`` returns the raw Find My location dict; ``geocode`` -> address text
+    (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``);
+    ``weather`` -> the sky over that district, asked only when the stored one is stale."""
     gen, device, crs = config["generation"], config["device_id"], config["source_crs"]
     prev = previous if (isinstance(previous, dict) and previous.get("generation") == gen
                         and previous.get("device_id") == device and previous.get("source_crs") == crs) else None
     since = float(config.get("enabled_since") or 0)
     snap: dict[str, Any] = {"generation": gen, "device_id": device, "source_crs": crs,
                             "checked_at": now, "status": "waiting_fresh", "error": None}
-    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address"):
+    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather"):
         if prev and key in prev:
             snap[key] = prev[key]
     try:
@@ -186,11 +193,46 @@ def poll_once(config: dict, previous: dict | None, now: float,
                 if not text:
                     raise ValueError("empty address")
                 addr = {"text": text, "lat": snap["latitude"], "lon": snap["longitude"], "crs": crs,
-                        "queried_at": now, "retry_at": 0, "error": None}
+                        "queried_at": now, "retry_at": 0, "error": None,
+                        "adcode": getattr(geocode, "last_adcode", None)}
             except Exception as exc:  # noqa: BLE001 - coordinates stay valid without an address
                 addr.update(retry_at=now + ADDRESS_RETRY, error="geocode_failed:" + type(exc).__name__)
             snap["address"] = addr
+        if weather is not None:
+            sky = _weather_step(snap, now, weather)
+            if sky is not None:
+                snap["weather"] = sky
     return snap
+
+
+def _weather_needed(snap: dict, adcode: str, now: float) -> bool:
+    current = snap.get("weather") if isinstance(snap.get("weather"), dict) else None
+    if current is None:
+        return True
+    if now < float(current.get("retry_at") or 0):
+        return False
+    if current.get("adcode") != adcode:
+        return True
+    return now - float(current.get("fetched_at") or 0) >= WEATHER_SECONDS
+
+
+def _weather_step(snap: dict, now: float, weather: Callable[[str], dict]) -> dict | None:
+    """The sky over her district, kept in the snapshot next to the address. A failed ask keeps the
+    last answer and marks it (kinds only); no district code yet means nothing to ask."""
+    addr = snap.get("address") if isinstance(snap.get("address"), dict) else {}
+    adcode = addr.get("adcode") if isinstance(addr.get("adcode"), str) else None
+    current = snap.get("weather") if isinstance(snap.get("weather"), dict) else None
+    if not adcode or not _weather_needed(snap, adcode, now):
+        return current
+    try:
+        fresh = weather(adcode)
+        if not isinstance(fresh, dict) or not fresh.get("text"):
+            raise ValueError("empty weather")
+        return {**fresh, "adcode": adcode, "fetched_at": now, "retry_at": 0, "error": None}
+    except Exception as exc:  # noqa: BLE001 - the location stays valid without a sky
+        kept = dict(current or {"adcode": adcode})
+        kept.update(retry_at=now + WEATHER_RETRY, error="weather_failed:" + type(exc).__name__)
+        return kept
 
 
 def write_snapshot(path: Path, snapshot: dict) -> None:
@@ -225,8 +267,46 @@ def amap_geocoder(key: str) -> Callable[[float, float, str], str]:
             loc = loc.split(";")[0]
         regeo = _amap_get("geocode/regeo", {"location": loc, "extensions": "base"}, key)
         text = regeo.get("regeocode", {}).get("formatted_address")
+        component = regeo.get("regeocode", {}).get("addressComponent") or {}
+        adcode = component.get("adcode") if isinstance(component, dict) else None
+        geocode.last_adcode = str(adcode) if isinstance(adcode, str) and adcode.isdigit() else None
         return text if isinstance(text, str) else ""
     return geocode
+
+
+def amap_weather(key: str) -> Callable[[str], dict]:
+    """AMap 天气: the live reading (实况) and the next days (预报) for one district code."""
+    def weather(adcode: str) -> dict:
+        live = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "base"}, key).get("lives") or []
+        casts = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "all"}, key).get("forecasts") or []
+        if not live or not isinstance(live[0], dict):
+            raise ValueError("no live weather")
+        row = live[0]
+        reported = row.get("reporttime") or ""
+        try:
+            reported_at = time.mktime(time.strptime(reported, "%Y-%m-%d %H:%M:%S"))
+        except (TypeError, ValueError):
+            reported_at = None
+        days = []
+        for cast in (casts[0].get("casts") if casts and isinstance(casts[0], dict) else []) or []:
+            if not isinstance(cast, dict):
+                continue
+            days.append({"date": str(cast.get("date") or "")[:10], "day": str(cast.get("dayweather") or "")[:12],
+                         "night": str(cast.get("nightweather") or "")[:12],
+                         "high": _num(cast.get("daytemp")), "low": _num(cast.get("nighttemp")),
+                         "wind": str(cast.get("daywind") or "")[:6], "power": str(cast.get("daypower") or "")[:8]})
+        return {"city": str(row.get("city") or "")[:24], "province": str(row.get("province") or "")[:24],
+                "text": str(row.get("weather") or "")[:12], "temp": _num(row.get("temperature")),
+                "humidity": _num(row.get("humidity")), "wind_dir": str(row.get("winddirection") or "")[:6],
+                "wind_power": str(row.get("windpower") or "")[:8], "reported_at": reported_at, "days": days[:4]}
+    return weather
+
+
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class ResumeLoginRefused(Exception):
@@ -524,6 +604,7 @@ def run(config_path: Path = CONFIG) -> int:
         return 0  # ponytail: no automatic re-login against her main account; she switches on again
     key = os.environ.get("AMAP_KEY", "").strip()
     geocode = amap_geocoder(key) if key else None
+    weather = amap_weather(key) if key else None
     while not stop["flag"]:
         try:
             previous = json.loads(latest.read_text(encoding="utf-8"))
@@ -534,7 +615,7 @@ def run(config_path: Path = CONFIG) -> int:
             api.devices.refresh(locate=True)
             return api.devices.devices[config["device_id"]].location
 
-        snap = poll_once(config, previous, time.time(), fetch, geocode)
+        snap = poll_once(config, previous, time.time(), fetch, geocode, weather)
         current = read_config(config_path)  # a late result never crosses a toggle
         if not runnable(current) or current["generation"] != config["generation"]:
             log.info("location config_changed; exiting without publishing")

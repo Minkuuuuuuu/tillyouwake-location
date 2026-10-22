@@ -13,6 +13,7 @@ LATEST = Path("/var/lib/tillyouwake-location/latest.json")
 PLACES = Path("/etc/tillyouwake-location/places.json")
 FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
+WEATHER_FRESH_SECONDS = 2 * 3600  # a sky reading older than this is not worth telling
 ADDRESS_REUSE_M = 100
 SH = ZoneInfo("Asia/Shanghai")
 CRS_LABEL = {"wgs84": "WGS-84", "gcj02": "GCJ-02"}
@@ -99,12 +100,51 @@ def format_location(snapshot: dict | None, now: float, places: list | None = Non
     return text
 
 
+def _deg(value: Any) -> str:
+    try:
+        return f"{round(float(value))}°"
+    except (TypeError, ValueError):
+        return ""
+
+
+def format_weather(snapshot: dict | None, now: float) -> str:
+    """The sky over her district, from the collector's AMap reading beside the address (since 2026-10-22,
+    the shared-weather line she asked for). Empty when there is none or it is hours old."""
+    weather = snapshot.get("weather") if isinstance(snapshot, dict) else None
+    if not isinstance(weather, dict) or not weather.get("text"):
+        return ""
+    fetched = float(weather.get("fetched_at") or 0)
+    if now - fetched > WEATHER_FRESH_SECONDS:
+        return ""
+    parts = [f"{weather.get('city') or '她那儿'} {weather['text']}"]
+    temp = _deg(weather.get("temp"))
+    if temp:
+        parts[0] += f" {temp}"
+    if weather.get("humidity") is not None:
+        parts.append(f"湿度{round(float(weather['humidity']))}%")
+    if weather.get("wind_dir") and weather.get("wind_power"):
+        parts.append(f"{weather['wind_dir']}风{weather['wind_power']}级")
+    days = [d for d in (weather.get("days") or []) if isinstance(d, dict)]
+    today = dt.datetime.fromtimestamp(now, SH).date().isoformat()
+    for d in days[:2]:
+        label = "今天" if d.get("date") == today else "明天" if d.get("date") == (dt.date.fromisoformat(today) + dt.timedelta(days=1)).isoformat() else d.get("date", "")[5:]
+        sky = d.get("day", "") if d.get("day") == d.get("night") else f"{d.get('day', '')}转{d.get('night', '')}"
+        parts.append(f"{label}{sky} {_deg(d.get('high'))}/{_deg(d.get('low'))}")
+    reported = weather.get("reported_at")
+    tail = f"（{_when(float(reported), now)} 实况）" if isinstance(reported, (int, float)) else ""
+    return "[天气] " + "；".join(parts) + "。" + tail
+
+
 def pre_llm_call(*_args: Any, platform: Any = None, app_lane: Any = None, **_kwargs: Any) -> dict | None:
     # Both App lanes: her typed turns and each turn of a call (she asked for calls to carry it too).
     if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane not in {"text", "phone"}:
         return None
     import time
-    text = format_location(current(_load(CONFIG), _load(LATEST)), time.time(), load_places())
+    now = time.time()
+    snapshot = current(_load(CONFIG), _load(LATEST))
+    text = format_location(snapshot, now, load_places())
+    sky = format_weather(snapshot, now)
+    text = "\n".join(part for part in (text, sky) if part)
     return {"context": text} if text else None
 
 
@@ -112,4 +152,4 @@ def register(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", pre_llm_call)
 
 
-__all__ = ["register", "pre_llm_call", "format_location", "current", "load_places", "place_names"]
+__all__ = ["register", "pre_llm_call", "format_location", "format_weather", "current", "load_places", "place_names"]
