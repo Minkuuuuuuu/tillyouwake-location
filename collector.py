@@ -197,7 +197,6 @@ def poll_once(config: dict, previous: dict | None, now: float,
     for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather", "battery"):
         if prev and key in prev:
             snap[key] = prev[key]
-    _battery_logged = {"done": False}
     try:
         raw = fetch()
         # Accept both old shape (pure location dict) and new shape (device content dict with 'location' key)
@@ -213,10 +212,10 @@ def poll_once(config: dict, previous: dict | None, now: float,
         if isinstance(raw, dict) and "batteryLevel" in raw:
             battery = normalize_battery(raw, now)
             if battery is not None:
-                if "battery" not in snap or not _battery_logged["done"]:
-                    log.info("location battery level=%s charging=%s",
-                             battery["level"], battery["charging"])
-                    _battery_logged["done"] = True
+                before = snap.get("battery") if isinstance(snap.get("battery"), dict) else None
+                if (before is None or before.get("charging") != battery["charging"]
+                        or abs(float(before.get("level") or 0) - battery["level"]) >= 0.05):
+                    log.info("location battery level=%s charging=%s", battery["level"], battery["charging"])
                 snap["battery"] = battery
     except Exception as exc:  # noqa: BLE001 - one failed poll must not kill the loop
         snap["error"] = f"fetch_failed:{classify_error(exc)}:{type(exc).__name__}"
