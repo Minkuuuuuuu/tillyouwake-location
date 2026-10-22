@@ -72,6 +72,29 @@ class Tests(unittest.TestCase):
         src = (ROOT / "integrations/app-voice.patch").read_text()
         self.assertEqual(src.count('app_lane=getattr(agent, "_app_lane", None),'), 1)
 
+    def test_battery_shown_when_present_and_fresh(self):
+        with_battery = dict(SNAP, battery={"level": 0.42, "charging": False, "at": NOW - 600})
+        text = plugin.format_location(plugin.current(CFG, with_battery), NOW)
+        self.assertIn("电量 42%", text)
+        self.assertNotIn("充电中", text)
+
+    def test_battery_charging_indicator(self):
+        charging = dict(SNAP, battery={"level": 0.78, "charging": True, "at": NOW - 100})
+        text = plugin.format_location(plugin.current(CFG, charging), NOW)
+        self.assertIn("电量 78%（充电中）", text)
+
+    def test_battery_not_shown_when_stale(self):
+        stale = dict(SNAP, battery={"level": 0.5, "charging": False, "at": NOW - 3601})
+        text = plugin.format_location(plugin.current(CFG, stale), NOW)
+        self.assertNotIn("电量", text)
+
+    def test_battery_not_shown_when_missing(self):
+        no_battery = dict(SNAP)
+        text = plugin.format_location(plugin.current(CFG, no_battery), NOW)
+        self.assertNotIn("电量", text)
+        # Existing test assertions should still pass
+        self.assertIn("广州市天河区某路", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,7 +94,17 @@ def format_location(snapshot: dict | None, now: float, places: list | None = Non
         head += f"；常用地点：「{names[0]}」附近"
     elif names:
         head += "；常用地点：" + "".join(f"「{n}」" for n in names) + "都在附近，分不清是哪个"
-    text = f"[位置] {head}；坐标：{coords}；设备定位：{when}；误差约{round(accuracy)}米。"
+    text = f"[位置] {head}；坐标：{coords}；设备定位：{when}；误差约{round(accuracy)}米"
+    # Battery level and charging status (only when fresh, within 1 hour)
+    battery = snapshot.get("battery") if isinstance(snapshot.get("battery"), dict) else None
+    if battery and isinstance(battery.get("at"), (int, float)) and now - float(battery["at"]) <= 3600:
+        level = battery.get("level")
+        if isinstance(level, (int, float)):
+            level_pct = round(level * 100)
+            text += f"；电量 {level_pct}%"
+            if battery.get("charging") is True:
+                text += "（充电中）"
+    text += "。"
     if accuracy > GOOD_ACCURACY_M:
         text = text[:-1] + "，误差较大，不可靠。"
     return text
