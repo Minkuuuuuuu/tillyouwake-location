@@ -26,10 +26,14 @@ from typing import Any, Callable
 CONFIG = Path("/etc/tillyouwake-location/config.json")
 STATE_DIR = Path("/var/lib/tillyouwake-location")
 POLL_SECONDS = 60
-# Weather (AMap, same key as the address): asked at most every 10 min, or sooner when she enters another
-# district; a failed ask waits 5 min. Shares the poll loop — no extra process, a few KB in the snapshot.
-WEATHER_SECONDS = 600
-WEATHER_RETRY = 300
+# Weather (AMap, same key as the address). AMap gives a personal key 5,000 weather calls a month, and the
+# live reading (实况) and the forecast (预报) are two calls each — at 10 min for both we spent ~8,600/month
+# (her 80% warning on 2026-11-15). Now: the live reading at most every 20 min, the forecast rides on a live
+# ask at most every 3 h, both at once when she enters another district; a failed ask waits 15 min.
+# ≈ 72 live + 8 forecast a day ≈ 2,400/month, leaving room for district changes. Shares the poll loop.
+WEATHER_SECONDS = 1200
+FORECAST_SECONDS = 3 * 3600
+WEATHER_RETRY = 900
 FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 ADDRESS_REUSE_M = 100
@@ -240,30 +244,42 @@ def poll_once(config: dict, previous: dict | None, now: float,
     return snap
 
 
-def _weather_needed(snap: dict, adcode: str, now: float) -> bool:
+def _weather_wants(snap: dict, adcode: str, now: float) -> tuple[bool, bool]:
+    """(ask the live reading, ask the forecast too). The forecast only ever rides on a live ask, so the
+    two never wake AMap at different minutes; a new district asks for both at once."""
     current = snap.get("weather") if isinstance(snap.get("weather"), dict) else None
     if current is None:
-        return True
+        return True, True
     if now < float(current.get("retry_at") or 0):
-        return False
+        return False, False
     if current.get("adcode") != adcode:
-        return True
-    return now - float(current.get("fetched_at") or 0) >= WEATHER_SECONDS
+        return True, True
+    live = now - float(current.get("fetched_at") or 0) >= WEATHER_SECONDS
+    forecast = not current.get("days") or now - float(current.get("forecast_at") or 0) >= FORECAST_SECONDS
+    return live, live and forecast
 
 
-def _weather_step(snap: dict, now: float, weather: Callable[[str], dict]) -> dict | None:
+def _weather_step(snap: dict, now: float, weather: Callable[..., dict]) -> dict | None:
     """The sky over her district, kept in the snapshot next to the address. A failed ask keeps the
-    last answer and marks it (kinds only); no district code yet means nothing to ask."""
+    last answer and marks it (kinds only); no district code yet means nothing to ask. When only the
+    live reading is asked, the days ahead are carried over from the last forecast."""
     addr = snap.get("address") if isinstance(snap.get("address"), dict) else {}
     adcode = addr.get("adcode") if isinstance(addr.get("adcode"), str) else None
     current = snap.get("weather") if isinstance(snap.get("weather"), dict) else None
-    if not adcode or not _weather_needed(snap, adcode, now):
+    if not adcode:
+        return current
+    live, forecast = _weather_wants(snap, adcode, now)
+    if not live:
         return current
     try:
-        fresh = weather(adcode)
+        fresh = weather(adcode, forecast=forecast)
         if not isinstance(fresh, dict) or not fresh.get("text"):
             raise ValueError("empty weather")
-        return {**fresh, "adcode": adcode, "fetched_at": now, "retry_at": 0, "error": None}
+        carried = current if current and current.get("adcode") == adcode else {}
+        days = fresh.get("days") if forecast else carried.get("days")
+        forecast_at = now if forecast else carried.get("forecast_at")
+        return {**fresh, "days": days or [], "forecast_at": forecast_at,
+                "adcode": adcode, "fetched_at": now, "retry_at": 0, "error": None}
     except Exception as exc:  # noqa: BLE001 - the location stays valid without a sky
         kept = dict(current or {"adcode": adcode})
         kept.update(retry_at=now + WEATHER_RETRY, error="weather_failed:" + type(exc).__name__)
@@ -309,11 +325,11 @@ def amap_geocoder(key: str) -> Callable[[float, float, str], str]:
     return geocode
 
 
-def amap_weather(key: str) -> Callable[[str], dict]:
-    """AMap 天气: the live reading (实况) and the next days (预报) for one district code."""
-    def weather(adcode: str) -> dict:
+def amap_weather(key: str) -> Callable[..., dict]:
+    """AMap 天气: the live reading (实况) for one district code — one call — and, only when ``forecast``
+    is asked, the next days (预报) as a second call. Without it the answer carries no ``days``."""
+    def weather(adcode: str, forecast: bool = True) -> dict:
         live = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "base"}, key).get("lives") or []
-        casts = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "all"}, key).get("forecasts") or []
         if not live or not isinstance(live[0], dict):
             raise ValueError("no live weather")
         row = live[0]
@@ -322,6 +338,13 @@ def amap_weather(key: str) -> Callable[[str], dict]:
             reported_at = time.mktime(time.strptime(reported, "%Y-%m-%d %H:%M:%S"))
         except (TypeError, ValueError):
             reported_at = None
+        sky = {"city": str(row.get("city") or "")[:24], "province": str(row.get("province") or "")[:24],
+               "text": str(row.get("weather") or "")[:12], "temp": _num(row.get("temperature")),
+               "humidity": _num(row.get("humidity")), "wind_dir": str(row.get("winddirection") or "")[:6],
+               "wind_power": str(row.get("windpower") or "")[:8], "reported_at": reported_at}
+        if not forecast:
+            return sky
+        casts = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "all"}, key).get("forecasts") or []
         days = []
         for cast in (casts[0].get("casts") if casts and isinstance(casts[0], dict) else []) or []:
             if not isinstance(cast, dict):
@@ -330,10 +353,7 @@ def amap_weather(key: str) -> Callable[[str], dict]:
                          "night": str(cast.get("nightweather") or "")[:12],
                          "high": _num(cast.get("daytemp")), "low": _num(cast.get("nighttemp")),
                          "wind": str(cast.get("daywind") or "")[:6], "power": str(cast.get("daypower") or "")[:8]})
-        return {"city": str(row.get("city") or "")[:24], "province": str(row.get("province") or "")[:24],
-                "text": str(row.get("weather") or "")[:12], "temp": _num(row.get("temperature")),
-                "humidity": _num(row.get("humidity")), "wind_dir": str(row.get("winddirection") or "")[:6],
-                "wind_power": str(row.get("windpower") or "")[:8], "reported_at": reported_at, "days": days[:4]}
+        return {**sky, "days": days[:4]}
     return weather
 
 
