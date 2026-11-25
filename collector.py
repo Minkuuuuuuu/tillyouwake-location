@@ -8,6 +8,7 @@ Logs carry kinds only: never coordinates, addresses, account names or keys.
 from __future__ import annotations
 
 import argparse
+import calendar
 import fcntl
 import json
 import logging
@@ -26,14 +27,18 @@ from typing import Any, Callable
 CONFIG = Path("/etc/tillyouwake-location/config.json")
 STATE_DIR = Path("/var/lib/tillyouwake-location")
 POLL_SECONDS = 60
-# Weather (AMap, same key as the address). AMap gives a personal key 5,000 weather calls a month, and the
-# live reading (实况) and the forecast (预报) are two calls each — at 10 min for both we spent ~8,600/month
-# (her 80% warning on 2026-11-15). Now: the live reading at most every 20 min, the forecast rides on a live
-# ask at most every 3 h, both at once when she enters another district; a failed ask waits 15 min.
-# ≈ 72 live + 8 forecast a day ≈ 2,400/month, leaving room for district changes. Shares the poll loop.
+# Weather (Open-Meteo, keyless, since 2026-11-26 — AMap's personal key is 5,000 weather calls a month and
+# ran dry twice: the 80% text on 11-15 at 10-min double asks, the 100% text on 11-26 even at 20 min). One
+# Open-Meteo request carries the live reading (实况, refreshed every 15 min upstream) and the days ahead;
+# the free tier allows 10,000 a day, so 20 min ≈ 72 a day is nothing. The address still goes to AMap
+# (逆地理 has its own 150,000/month). The cadence shape is kept: live at most every 20 min, the forecast
+# rides on a live ask (free with Open-Meteo, so it always comes along), both at once in a new district,
+# a failed ask waits 15 min. Shares the poll loop.
 WEATHER_SECONDS = 1200
 FORECAST_SECONDS = 3 * 3600
 WEATHER_RETRY = 900
+OPEN_METEO = "https://api.open-meteo.com/v1/forecast"
+FORECAST_DAYS = 4
 FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 ADDRESS_REUSE_M = 100
@@ -188,10 +193,11 @@ def _address_needed(snap: dict, now: float) -> bool:
 
 def poll_once(config: dict, previous: dict | None, now: float,
               fetch: Callable[[], Any], geocode: Callable[[float, float, str], str] | None,
-              weather: Callable[[str], dict] | None = None) -> dict:
+              weather: Callable[..., dict] | None = None) -> dict:
     """One poll. ``fetch`` returns the raw Find My location dict or device content dict (with 'location' key);
-    ``geocode`` -> address text (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``);
-    ``weather`` -> the sky over that district, asked only when the stored one is stale."""
+    ``geocode`` -> address text (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``
+    and its name on ``geocode.last_district``); ``weather(lat, lon, forecast=)`` -> the sky over her point,
+    asked only when the stored one is stale and only once the district is known."""
     gen, device, crs = config["generation"], config["device_id"], config["source_crs"]
     prev = previous if (isinstance(previous, dict) and previous.get("generation") == gen
                         and previous.get("device_id") == device and previous.get("source_crs") == crs) else None
@@ -233,7 +239,8 @@ def poll_once(config: dict, previous: dict | None, now: float,
                     raise ValueError("empty address")
                 addr = {"text": text, "lat": snap["latitude"], "lon": snap["longitude"], "crs": crs,
                         "queried_at": now, "retry_at": 0, "error": None,
-                        "adcode": getattr(geocode, "last_adcode", None)}
+                        "adcode": getattr(geocode, "last_adcode", None),
+                        "district": getattr(geocode, "last_district", None)}
             except Exception as exc:  # noqa: BLE001 - coordinates stay valid without an address
                 addr.update(retry_at=now + ADDRESS_RETRY, error="geocode_failed:" + type(exc).__name__)
             snap["address"] = addr
@@ -259,10 +266,18 @@ def _weather_wants(snap: dict, adcode: str, now: float) -> tuple[bool, bool]:
     return live, live and forecast
 
 
+def _district_of(text: Any) -> str:
+    """The 区/县 inside an AMap formatted address ("广东省广州市天河区五山街道…" -> "天河区"), for addresses
+    stored before the geocoder started leaving ``district`` beside them. Empty when there is none."""
+    match = re.search(r"(?:省|自治区|市)([^省市区县]{1,8}(?:区|县))", str(text or ""))
+    return match.group(1) if match else ""
+
+
 def _weather_step(snap: dict, now: float, weather: Callable[..., dict]) -> dict | None:
-    """The sky over her district, kept in the snapshot next to the address. A failed ask keeps the
-    last answer and marks it (kinds only); no district code yet means nothing to ask. When only the
-    live reading is asked, the days ahead are carried over from the last forecast."""
+    """The sky over her point, kept in the snapshot next to the address. A failed ask keeps the last
+    answer and marks it (kinds only); no district code yet means nothing to ask (the district is the
+    sky's identity downstream). When the answer carries no days ahead, they are carried over from the
+    last forecast. The district name comes from the address, not the weather service."""
     addr = snap.get("address") if isinstance(snap.get("address"), dict) else {}
     adcode = addr.get("adcode") if isinstance(addr.get("adcode"), str) else None
     current = snap.get("weather") if isinstance(snap.get("weather"), dict) else None
@@ -272,13 +287,14 @@ def _weather_step(snap: dict, now: float, weather: Callable[..., dict]) -> dict 
     if not live:
         return current
     try:
-        fresh = weather(adcode, forecast=forecast)
+        fresh = weather(snap["latitude"], snap["longitude"], forecast=forecast)
         if not isinstance(fresh, dict) or not fresh.get("text"):
             raise ValueError("empty weather")
         carried = current if current and current.get("adcode") == adcode else {}
-        days = fresh.get("days") if forecast else carried.get("days")
-        forecast_at = now if forecast else carried.get("forecast_at")
-        return {**fresh, "days": days or [], "forecast_at": forecast_at,
+        days = fresh.get("days") or carried.get("days")
+        forecast_at = now if fresh.get("days") else carried.get("forecast_at")
+        city = fresh.get("city") or addr.get("district") or _district_of(addr.get("text")) or carried.get("city") or ""
+        return {**fresh, "city": str(city)[:24], "days": days or [], "forecast_at": forecast_at,
                 "adcode": adcode, "fetched_at": now, "retry_at": 0, "error": None}
     except Exception as exc:  # noqa: BLE001 - the location stays valid without a sky
         kept = dict(current or {"adcode": adcode})
@@ -321,39 +337,91 @@ def amap_geocoder(key: str) -> Callable[[float, float, str], str]:
         component = regeo.get("regeocode", {}).get("addressComponent") or {}
         adcode = component.get("adcode") if isinstance(component, dict) else None
         geocode.last_adcode = str(adcode) if isinstance(adcode, str) and adcode.isdigit() else None
+        district = (component.get("district") or component.get("city")) if isinstance(component, dict) else None
+        geocode.last_district = str(district)[:24] if isinstance(district, str) and district else None
         return text if isinstance(text, str) else ""
     return geocode
 
 
-def amap_weather(key: str) -> Callable[..., dict]:
-    """AMap 天气: the live reading (实况) for one district code — one call — and, only when ``forecast``
-    is asked, the next days (预报) as a second call. Without it the answer carries no ``days``."""
-    def weather(adcode: str, forecast: bool = True) -> dict:
-        live = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "base"}, key).get("lives") or []
-        if not live or not isinstance(live[0], dict):
-            raise ValueError("no live weather")
-        row = live[0]
-        reported = row.get("reporttime") or ""
-        try:
-            reported_at = time.mktime(time.strptime(reported, "%Y-%m-%d %H:%M:%S"))
-        except (TypeError, ValueError):
-            reported_at = None
-        sky = {"city": str(row.get("city") or "")[:24], "province": str(row.get("province") or "")[:24],
-               "text": str(row.get("weather") or "")[:12], "temp": _num(row.get("temperature")),
-               "humidity": _num(row.get("humidity")), "wind_dir": str(row.get("winddirection") or "")[:6],
-               "wind_power": str(row.get("windpower") or "")[:8], "reported_at": reported_at}
-        if not forecast:
-            return sky
-        casts = _amap_get("weather/weatherInfo", {"city": adcode, "extensions": "all"}, key).get("forecasts") or []
-        days = []
-        for cast in (casts[0].get("casts") if casts and isinstance(casts[0], dict) else []) or []:
-            if not isinstance(cast, dict):
-                continue
-            days.append({"date": str(cast.get("date") or "")[:10], "day": str(cast.get("dayweather") or "")[:12],
-                         "night": str(cast.get("nightweather") or "")[:12],
-                         "high": _num(cast.get("daytemp")), "low": _num(cast.get("nighttemp")),
-                         "wind": str(cast.get("daywind") or "")[:6], "power": str(cast.get("daypower") or "")[:8]})
-        return {**sky, "days": days[:4]}
+# WMO weather codes (what Open-Meteo reports) in AMap's own words, so the downstream line and the
+# rain-start check (雨/雪/雹 in the text) read exactly as before.
+_WMO_TEXT = {0: "晴", 1: "晴", 2: "多云", 3: "阴", 45: "雾", 48: "雾", 51: "毛毛雨", 53: "毛毛雨", 55: "毛毛雨",
+             56: "冻雨", 57: "冻雨", 61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "冻雨",
+             71: "小雪", 73: "中雪", 75: "大雪", 77: "小雪", 80: "阵雨", 81: "阵雨", 82: "强阵雨",
+             85: "阵雪", 86: "阵雪", 95: "雷阵雨", 96: "雷阵雨伴有冰雹", 99: "雷阵雨伴有冰雹"}
+_WIND_DIRS = ("北", "东北", "东", "东南", "南", "西南", "西", "西北")
+_BEAUFORT_MS = (0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7)
+
+
+def wmo_text(code: Any) -> str:
+    try:
+        return _WMO_TEXT.get(int(code), "")
+    except (TypeError, ValueError):
+        return ""
+
+
+def wind_dir_text(degrees: Any) -> str:
+    deg = _num(degrees)
+    return _WIND_DIRS[int(round(deg / 45.0)) % 8] if deg is not None else ""
+
+
+def wind_power_text(speed_ms: Any) -> str:
+    """Beaufort number from m/s, written the way AMap does: ≤3 for a light wind, the number above that."""
+    speed = _num(speed_ms)
+    if speed is None:
+        return ""
+    bft = sum(1 for limit in _BEAUFORT_MS if speed >= limit)
+    return "≤3" if bft <= 3 else str(bft)
+
+
+def _local_epoch(stamp: Any, utc_offset: Any, fmt: str) -> float | None:
+    """An Open-Meteo local timestamp ("2026-11-26T03:45" in the point's own zone) as epoch seconds."""
+    try:
+        return float(calendar.timegm(time.strptime(str(stamp), fmt)) - int(utc_offset or 0))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def parse_open_meteo(data: dict) -> dict:
+    """One forecast answer -> the sky dict the snapshot keeps (no ``city``: that is the address's job)."""
+    current = data.get("current") if isinstance(data.get("current"), dict) else {}
+    text = wmo_text(current.get("weather_code"))
+    if not text:
+        raise ValueError("no live weather")
+    offset = data.get("utc_offset_seconds")
+    sky = {"text": text, "temp": _num(current.get("temperature_2m")),
+           "humidity": _num(current.get("relative_humidity_2m")),
+           "wind_dir": wind_dir_text(current.get("wind_direction_10m")),
+           "wind_power": wind_power_text(current.get("wind_speed_10m")),
+           "reported_at": _local_epoch(current.get("time"), offset, "%Y-%m-%dT%H:%M")}
+    daily = data.get("daily") if isinstance(data.get("daily"), dict) else {}
+    days = []
+    for i, date in enumerate(daily.get("time") or []):
+        def col(name: str) -> Any:
+            values = daily.get(name) or []
+            return values[i] if i < len(values) else None
+        sky_text = wmo_text(col("weather_code"))
+        days.append({"date": str(date)[:10], "day": sky_text, "night": sky_text,
+                     "high": _num(col("temperature_2m_max")), "low": _num(col("temperature_2m_min")),
+                     "wind": wind_dir_text(col("wind_direction_10m_dominant")),
+                     "power": wind_power_text(col("wind_speed_10m_max"))})
+    return {**sky, "days": days[:FORECAST_DAYS]}
+
+
+def open_meteo_weather() -> Callable[..., dict]:
+    """Open-Meteo: the live reading and the days ahead for a point, one keyless request. ``forecast`` is
+    accepted for the step's cadence contract but costs nothing here, so the days always come along."""
+    def weather(lat: float, lon: float, forecast: bool = True) -> dict:
+        params = {"latitude": f"{float(lat):.4f}", "longitude": f"{float(lon):.4f}", "timezone": "auto",
+                  "forecast_days": FORECAST_DAYS, "wind_speed_unit": "ms",
+                  "current": "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m",
+                  "daily": "weather_code,temperature_2m_max,temperature_2m_min,wind_speed_10m_max,"
+                           "wind_direction_10m_dominant"}
+        with urllib.request.urlopen(OPEN_METEO + "?" + urllib.parse.urlencode(params), timeout=8) as resp:
+            data = json.loads(resp.read(65536))
+        if not isinstance(data, dict) or data.get("error"):
+            raise RuntimeError("open_meteo_error")
+        return parse_open_meteo(data)
     return weather
 
 
@@ -659,7 +727,7 @@ def run(config_path: Path = CONFIG) -> int:
         return 0  # ponytail: no automatic re-login against her main account; she switches on again
     key = os.environ.get("AMAP_KEY", "").strip()
     geocode = amap_geocoder(key) if key else None
-    weather = amap_weather(key) if key else None
+    weather = open_meteo_weather()  # keyless; still waits for the district the geocoder names
     while not stop["flag"]:
         try:
             previous = json.loads(latest.read_text(encoding="utf-8"))
