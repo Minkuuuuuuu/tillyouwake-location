@@ -15,6 +15,7 @@ FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 WEATHER_FRESH_SECONDS = 2 * 3600  # a sky reading older than this is not worth telling
 ADDRESS_REUSE_M = 100
+TRAVEL_ADDRESS_REUSE_M = 5000  # on the road the address is from the last minute's point, kilometres back
 SH = ZoneInfo("Asia/Shanghai")
 CRS_LABEL = {"wgs84": "WGS-84", "gcj02": "GCJ-02"}
 
@@ -88,6 +89,9 @@ def format_location(snapshot: dict | None, now: float, places: list | None = Non
     if now - float(snapshot["sampled_at"]) > FRESH_SECONDS:
         return f"[位置] 最后已知：{near or coords}；设备定位：{when}，已超过 5 分钟，不能据此判断现在仍在这里。"
     accuracy = float(snapshot.get("accuracy_m") or 0)
+    travel = snapshot.get("travel") if isinstance(snapshot.get("travel"), dict) else None
+    if travel and travel.get("active"):
+        return _format_travel(snapshot, travel, addr, lat, lon, when, accuracy, now)
     head = f"附近：{near}" if near else "地址未更新"
     names = place_names(snapshot, places or [])
     if len(names) == 1:
@@ -108,6 +112,41 @@ def format_location(snapshot: dict | None, now: float, places: list | None = Non
     if accuracy > GOOD_ACCURACY_M:
         text = text[:-1] + "，误差较大，不可靠。"
     return text
+
+
+def _battery_part(snapshot: dict, now: float) -> str:
+    battery = snapshot.get("battery") if isinstance(snapshot.get("battery"), dict) else None
+    if not (battery and isinstance(battery.get("at"), (int, float)) and now - float(battery["at"]) <= 3600):
+        return ""
+    level = battery.get("level")
+    if not isinstance(level, (int, float)):
+        return ""
+    return f"；电量 {round(level * 100)}%" + ("（充电中）" if battery.get("charging") is True else "")
+
+
+def _format_travel(snapshot: dict, travel: dict, addr: dict, lat: float, lon: float, when: str,
+                   accuracy: float, now: float) -> str:
+    """在路上 (her 2026-11-26 ask): where she is, how fast and which way, the city she just left, when.
+    On the road the address may be a few kilometres behind the fix and still worth naming."""
+    near = None
+    if addr.get("text") and addr.get("crs") == snapshot.get("source_crs"):
+        if _distance_m(addr["lat"], addr["lon"], lat, lon) <= TRAVEL_ADDRESS_REUSE_M:
+            near = str(addr["text"])[:200]
+    parts = ["在路上" + ("（她自己点的）" if travel.get("mode") == "manual" else ""),
+             f"附近：{near}" if near else "地址未更新"]
+    speed = travel.get("speed_kmh")
+    if isinstance(speed, (int, float)) and isinstance(travel.get("speed_at"), (int, float)) \
+            and now - float(travel["speed_at"]) <= FRESH_SECONDS:
+        pace = f"约 {round(float(speed))} km/h" if speed >= 1 else "暂时停着"
+        if speed >= 1 and travel.get("heading"):
+            pace += f" 往{travel['heading']}"
+        parts.append(pace)
+    if travel.get("left_city") and isinstance(travel.get("entered_at"), (int, float)):
+        parts.append(f"刚过{travel['left_city']}（{_when(float(travel['entered_at']), now)} 进{travel.get('entered_city') or '下一个市'}）")
+    elif travel.get("start_city"):
+        parts.append(f"从{travel['start_city']}出发")
+    parts.append(f"设备定位：{when}；误差约{round(accuracy)}米")
+    return "[位置] " + "；".join(parts) + _battery_part(snapshot, now) + "。"
 
 
 def _deg(value: Any) -> str:
@@ -147,7 +186,7 @@ def format_weather(snapshot: dict | None, now: float) -> str:
 
 def pre_llm_call(*_args: Any, platform: Any = None, app_lane: Any = None, **_kwargs: Any) -> dict | None:
     # Both App lanes: her typed turns and each turn of a call (she asked for calls to carry it too).
-    if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane not in {"text", "phone"}:
+    if str(getattr(platform, "value", platform) or "").lower() != "tillyouwake_app" or app_lane not in {"text", "phone", "short"}:
         return None
     import time
     now = time.time()

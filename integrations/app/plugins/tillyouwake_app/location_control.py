@@ -1,7 +1,8 @@
 """App setting: the one location switch (config + the fixed collector unit).
 
 This side alone writes /etc/tillyouwake-location/config.json; the main gateway
-owns its runtime. Only ``{"enabled": bool}`` is accepted and only the fixed unit
+owns its runtime. ``{"enabled": bool}`` drives the switch, ``{"travel": {"action": ...}}`` her
+在路上 switch / 【到了】 button (a note in the config the collector consumes), and only the fixed unit
 below is ever started/stopped. Never returns account, key or device id; the
 only location it returns is ``preview``: the exact [位置] text the App text lane
 would add right now (same formatter, so it is empty when switched off). Places
@@ -282,12 +283,49 @@ def snapshot() -> dict:
     return {"enabled": enabled, "running": running, "status": status,
             "last_error": error if isinstance(error, str) else None,
             "preview": _preview(config) if enabled else None,
-            "places": places, "mark_blocker": blocker, "relogin": _relogin_view(config, active)}
+            "places": places, "mark_blocker": blocker, "relogin": _relogin_view(config, active),
+            "travel": _travel_view(config, _load(LATEST)) if enabled else None}
+
+
+def _travel(action) -> None:
+    """Her 在路上 switch (2026-11-26): "start" puts her on the road by hand, "arrive" is the 【到了】 button.
+    Written into config.json as ``travel_switch``; the collector consumes it on its next poll and keeps
+    the mode itself (auto-enter on two fast samples, quiet auto-exit after half an hour still)."""
+    if not isinstance(action, dict) or set(action) != {"action"} or action.get("action") not in {"start", "arrive"}:
+        raise SettingsError(400, "invalid_travel_action")
+    config = _load(CONFIG)
+    if not isinstance(config, dict):
+        raise SettingsError(503, "location_config_unavailable")
+    if config.get("enabled") is not True:
+        raise SettingsError(409, "travel_location_off")
+    config["travel_switch"] = {"state": "on" if action["action"] == "start" else "arrived", "at": time.time()}
+    _write(config)
+
+
+def _travel_view(config: dict, latest) -> dict:
+    """What the card shows about 在路上: the collector's state plus a switch it has not consumed yet."""
+    mine = isinstance(latest, dict) and latest.get("generation") == config.get("generation")
+    travel = latest.get("travel") if mine and isinstance(latest.get("travel"), dict) else {}
+    switch = config.get("travel_switch") if isinstance(config.get("travel_switch"), dict) else None
+    pending = None
+    try:
+        if switch and float(switch.get("at") or 0) > float(travel.get("switch_at") or 0):
+            pending = "on" if switch.get("state") == "on" else "arrived"
+    except (TypeError, ValueError):
+        pending = None
+    keep = ("active", "mode", "since", "speed_kmh", "heading", "entered_city", "left_city", "start_city",
+            "ended_at", "ended_by", "end_city")
+    return {**{k: travel.get(k) for k in keep}, "active": travel.get("active") is True, "pending": pending}
 
 
 def update(payload) -> dict:
     if isinstance(payload, dict) and set(payload) == {"relogin"}:
         return _relogin(payload["relogin"])
+    if isinstance(payload, dict) and set(payload) == {"travel"}:
+        with _lock, open(CONFIG.with_name(".config.lock"), "a") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            _travel(payload["travel"])
+        return snapshot()
     if isinstance(payload, dict) and set(payload) == {"place"}:
         with _lock, open(CONFIG.with_name(".config.lock"), "a") as lock_file:
             fcntl.flock(lock_file, fcntl.LOCK_EX)

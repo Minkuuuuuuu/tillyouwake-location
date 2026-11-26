@@ -43,6 +43,17 @@ FRESH_SECONDS = 300
 GOOD_ACCURACY_M = 100
 ADDRESS_REUSE_M = 100
 ADDRESS_MIN_GAP = 60
+# 在路上 (travel mode, her 2026-11-26 ask from a 高铁): speed from two consecutive samples; two fast
+# readings in a row put her on the road, half an hour of standing still takes her off it quietly,
+# the App's 【到了】 button ends it out loud. While on the road the move wake is off and the
+# address only needs to name the city; the gateway tells 祂 once per new city instead.
+TRAVEL_FAST_KMH = 80.0
+TRAVEL_SLOW_KMH = 15.0
+TRAVEL_FAST_STREAK = 2
+TRAVEL_STILL_SECONDS = 30 * 60
+TRAVEL_SPEED_GAP_MAX = 600       # two samples further apart than this say nothing about speed
+TRAVEL_ADDRESS_ACCURACY_M = 2000
+_HEADINGS = ("北", "东北", "东", "东南", "南", "西南", "西", "西北")
 ADDRESS_RETRY = 300
 FUTURE_SLACK = 30
 CRS = ("wgs84", "gcj02")
@@ -180,8 +191,96 @@ def normalize_battery(content: Any, now: float) -> dict | None:
     return {"level": level, "charging": charging, "at": now} if level is not None else None
 
 
+def _travelling(travel: Any) -> bool:
+    return isinstance(travel, dict) and bool(travel.get("active") or travel.get("fast_streak"))
+
+
+def bearing_text(lat1: float, lon1: float, lat2: float, lon2: float) -> str:
+    """Eight-point compass direction of travel from the first point to the second."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    deg = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+    return _HEADINGS[int(round(deg / 45.0)) % 8]
+
+
+def speed_between(before: dict | None, fix: dict) -> tuple[float | None, str | None]:
+    """(km/h, heading) between the previous sample and this one, or (None, None) when the two say
+    nothing: same sample, too far apart in time, or a move smaller than the two error radii."""
+    if not before or not all(k in before for k in ("latitude", "longitude", "accuracy_m", "sampled_at")):
+        return None, None
+    gap = float(fix["sampled_at"]) - float(before["sampled_at"])
+    if gap <= 0 or gap > TRAVEL_SPEED_GAP_MAX:
+        return None, None
+    dist = distance_m(before["latitude"], before["longitude"], fix["latitude"], fix["longitude"])
+    sure = dist - (float(before["accuracy_m"]) + float(fix["accuracy_m"]))
+    if sure <= 0:
+        return 0.0, None
+    heading = bearing_text(before["latitude"], before["longitude"], fix["latitude"], fix["longitude"])
+    return round(sure / gap * 3.6, 1), heading
+
+
+def _travel_step(snap: dict, before: dict | None, switch: dict | None, now: float) -> dict:
+    """Her 在路上 state, kept in the snapshot. ``before`` is the previous sample (for speed), ``switch`` the
+    App's ``travel_switch`` from config.json ({"state": "on"|"arrived", "at": ts}), consumed once by ``at``.
+
+    Enter: TRAVEL_FAST_STREAK fast readings in a row (auto) or the switch (manual). Leave: the switch says
+    arrived (``ended_by`` "button" — the gateway tells 祂) or TRAVEL_STILL_SECONDS below the slow speed
+    (``ended_by`` "still" — quiet). ``entered_city``/``left_city`` follow the address's city while active.
+    """
+    t = dict(snap.get("travel") or {}) if isinstance(snap.get("travel"), dict) else {}
+    t.setdefault("active", False)
+    t.setdefault("fast_streak", 0)
+    t.setdefault("switch_at", 0)
+    fix = {k: snap.get(k) for k in ("latitude", "longitude", "accuracy_m", "sampled_at")}
+    new_sample = before is None or fix["sampled_at"] != before.get("sampled_at")
+    if new_sample and fix["sampled_at"] is not None:
+        speed, heading = speed_between(before, fix)
+        if speed is not None:
+            t.update(speed_kmh=speed, heading=heading or t.get("heading"), speed_at=now)
+            t["fast_streak"] = t["fast_streak"] + 1 if speed >= TRAVEL_FAST_KMH else 0
+            if t["active"]:
+                if speed < TRAVEL_SLOW_KMH:
+                    t.setdefault("still_since", None)
+                    t["still_since"] = t["still_since"] or now
+                else:
+                    t["still_since"] = None
+    addr = snap.get("address") if isinstance(snap.get("address"), dict) else {}
+    city = addr.get("city") if isinstance(addr.get("city"), str) and addr.get("city") else None
+
+    def start(mode: str) -> None:
+        t.update(active=True, mode=mode, since=now, still_since=None, entered_city=city, entered_at=now,
+                 left_city=None, start_city=city, ended_at=None, ended_by=None, end_city=None, end_text=None)
+
+    def end(by: str) -> None:
+        t.update(active=False, mode=None, still_since=None, fast_streak=0, ended_at=now, ended_by=by,
+                 end_city=city, end_text=str(addr.get("text") or "")[:80] or None)
+
+    # The App's switch, once per write.
+    if switch and isinstance(switch.get("at"), (int, float)) and float(switch["at"]) > float(t["switch_at"] or 0):
+        t["switch_at"] = float(switch["at"])
+        if switch.get("state") == "on" and not t["active"]:
+            start("manual")
+        elif switch.get("state") == "arrived" and t["active"]:
+            end("button")
+        elif switch.get("state") == "arrived":
+            t["fast_streak"] = 0  # pressed while already off: just make sure auto does not re-enter at once
+    if not t["active"] and t["fast_streak"] >= TRAVEL_FAST_STREAK:
+        start("auto")
+    if t["active"]:
+        if city and city != t.get("entered_city"):
+            t.update(left_city=t.get("entered_city"), entered_city=city, entered_at=now)
+        if t.get("still_since") and now - float(t["still_since"]) >= TRAVEL_STILL_SECONDS:
+            end("still")
+    return t
+
+
 def _address_needed(snap: dict, now: float) -> bool:
-    if now - snap["sampled_at"] > FRESH_SECONDS or snap["accuracy_m"] > GOOD_ACCURACY_M:
+    # On the road a fix is often hundreds of metres wide (train, tunnel, moving cell); the address
+    # is still wanted there, if only for the city she is passing.
+    limit = TRAVEL_ADDRESS_ACCURACY_M if _travelling(snap.get("travel")) else GOOD_ACCURACY_M
+    if now - snap["sampled_at"] > FRESH_SECONDS or snap["accuracy_m"] > limit:
         return False
     addr = snap.get("address") or {}
     if now < float(addr.get("retry_at") or 0) or now - float(addr.get("queried_at") or 0) < ADDRESS_MIN_GAP:
@@ -193,20 +292,23 @@ def _address_needed(snap: dict, now: float) -> bool:
 
 def poll_once(config: dict, previous: dict | None, now: float,
               fetch: Callable[[], Any], geocode: Callable[[float, float, str], str] | None,
-              weather: Callable[..., dict] | None = None) -> dict:
+              weather: Callable[..., dict] | None = None, travel_switch: dict | None = None) -> dict:
     """One poll. ``fetch`` returns the raw Find My location dict or device content dict (with 'location' key);
-    ``geocode`` -> address text (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``
-    and its name on ``geocode.last_district``); ``weather(lat, lon, forecast=)`` -> the sky over her point,
-    asked only when the stored one is stale and only once the district is known."""
+    ``geocode`` -> address text (and, when it is the AMap one, leaves the district code on ``geocode.last_adcode``,
+    its name on ``geocode.last_district`` and the city on ``geocode.last_city``); ``weather(lat, lon, forecast=)``
+    -> the sky over her point, asked only when the stored one is stale and only once the district is known;
+    ``travel_switch`` is the App's 在路上 switch from the live config (see ``_travel_step``)."""
     gen, device, crs = config["generation"], config["device_id"], config["source_crs"]
     prev = previous if (isinstance(previous, dict) and previous.get("generation") == gen
                         and previous.get("device_id") == device and previous.get("source_crs") == crs) else None
     since = float(config.get("enabled_since") or 0)
     snap: dict[str, Any] = {"generation": gen, "device_id": device, "source_crs": crs,
                             "checked_at": now, "status": "waiting_fresh", "error": None}
-    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather", "battery"):
+    for key in ("latitude", "longitude", "accuracy_m", "sampled_at", "fetched_at", "address", "weather", "battery",
+                "travel"):
         if prev and key in prev:
             snap[key] = prev[key]
+    before = {k: snap[k] for k in ("latitude", "longitude", "accuracy_m", "sampled_at")} if "sampled_at" in snap else None
     try:
         raw = fetch()
         # Accept both old shape (pure location dict) and new shape (device content dict with 'location' key)
@@ -240,10 +342,12 @@ def poll_once(config: dict, previous: dict | None, now: float,
                 addr = {"text": text, "lat": snap["latitude"], "lon": snap["longitude"], "crs": crs,
                         "queried_at": now, "retry_at": 0, "error": None,
                         "adcode": getattr(geocode, "last_adcode", None),
-                        "district": getattr(geocode, "last_district", None)}
+                        "district": getattr(geocode, "last_district", None),
+                        "city": getattr(geocode, "last_city", None)}
             except Exception as exc:  # noqa: BLE001 - coordinates stay valid without an address
                 addr.update(retry_at=now + ADDRESS_RETRY, error="geocode_failed:" + type(exc).__name__)
             snap["address"] = addr
+        snap["travel"] = _travel_step(snap, before, travel_switch, now)
         if weather is not None:
             sky = _weather_step(snap, now, weather)
             if sky is not None:
@@ -339,6 +443,9 @@ def amap_geocoder(key: str) -> Callable[[float, float, str], str]:
         geocode.last_adcode = str(adcode) if isinstance(adcode, str) and adcode.isdigit() else None
         district = (component.get("district") or component.get("city")) if isinstance(component, dict) else None
         geocode.last_district = str(district)[:24] if isinstance(district, str) and district else None
+        # AMap gives 直辖市 an empty ``city`` ([]) and the name under ``province``.
+        city = (component.get("city") or component.get("province")) if isinstance(component, dict) else None
+        geocode.last_city = str(city)[:24] if isinstance(city, str) and city else None
         return text if isinstance(text, str) else ""
     return geocode
 
@@ -739,7 +846,9 @@ def run(config_path: Path = CONFIG) -> int:
             device = api.devices.devices[config["device_id"]]
             return device.data  # Return full device content dict (includes location and battery)
 
-        snap = poll_once(config, previous, time.time(), fetch, geocode, weather)
+        live = read_config(config_path) or {}
+        switch = live.get("travel_switch") if isinstance(live.get("travel_switch"), dict) else None
+        snap = poll_once(config, previous, time.time(), fetch, geocode, weather, travel_switch=switch)
         current = read_config(config_path)  # a late result never crosses a toggle
         if not runnable(current) or current["generation"] != config["generation"]:
             log.info("location config_changed; exiting without publishing")
